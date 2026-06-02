@@ -45,12 +45,24 @@ mtask supports two methods. **OAuth user login is the default.**
    **OAuth client ID of type "Desktop app"**. Download its JSON.
 2. Save it to `~/.config/mtask/oauth_client.json`.
 3. `mtask auth login` — opens a browser and starts a temporary local HTTP
-   server to catch the redirect. The token is cached at
-   `~/.config/mtask/authorized_user.json`.
+   server to catch the redirect at `http://localhost:<port>/`. The token is
+   cached at `~/.config/mtask/authorized_user.json`.
    (`mtask auth logout` removes it.)
 
 Because you log in as yourself, any spreadsheet you can already edit just works
 — no extra sharing needed.
+
+#### Local-server port
+
+By default the redirect listener uses port **0**, i.e. an OS-chosen ephemeral
+port (a Desktop-app OAuth client accepts any `localhost` loopback port, so no
+redirect URI needs registering). To pin a fixed port — e.g. behind a firewall:
+
+```bash
+mtask auth port 8765         # persist a fixed port (0 = ephemeral, the default)
+mtask auth port              # show current
+mtask auth login --port 8765 # override just for this login
+```
 
 ### Service account (headless / servers)
 

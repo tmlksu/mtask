@@ -72,6 +72,19 @@ def set_auth_method(method: str) -> None:
     save(data)
 
 
+def get_auth_port() -> int:
+    """Port for the OAuth local-server flow. 0 = OS-chosen ephemeral port."""
+    return int(load().get("auth", {}).get("port", 0))
+
+
+def set_auth_port(port: int) -> None:
+    if not 0 <= port <= 65535:
+        raise ValueError("port must be between 0 and 65535 (0 = ephemeral)")
+    data = load()
+    data.setdefault("auth", {})["port"] = port
+    save(data)
+
+
 def get_user() -> str | None:
     return load().get("user", {}).get("name")
 

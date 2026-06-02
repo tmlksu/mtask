@@ -273,15 +273,19 @@ class AuthMethod(str, Enum):
 
 
 @auth_app.command("login")
-def auth_login():
+def auth_login(
+    port: Optional[int] = typer.Option(
+        None, "--port", help="Local-server port for this login (default: configured port, 0 = ephemeral)."
+    ),
+):
     """Run the OAuth browser flow now and cache the token.
 
     Opens a browser and starts a temporary local HTTP server to catch the
-    redirect. Requires an OAuth client secret at
+    redirect at http://localhost:<port>/. Requires an OAuth client secret at
     ~/.config/mtask/oauth_client.json (Desktop-app type).
     """
     try:
-        build_client()  # triggers the local-server flow if not yet authorized
+        build_client(oauth_port=port)  # triggers the local-server flow if not yet authorized
     except SheetError as e:
         _err(str(e))
     typer.secho("authenticated; token cached", fg=typer.colors.GREEN)
@@ -308,6 +312,21 @@ def auth_method(
     else:
         config.set_auth_method(method.value)
         typer.secho(f"auth method -> {method.value}", fg=typer.colors.GREEN)
+
+
+@auth_app.command("port")
+def auth_port(
+    port: Optional[int] = typer.Argument(None, help="Set OAuth local-server port. Omit to show current."),
+):
+    """Get or set the OAuth local-server port (0 = OS-chosen ephemeral port)."""
+    if port is None:
+        typer.echo(config.get_auth_port())
+    else:
+        try:
+            config.set_auth_port(port)
+        except ValueError as e:
+            _err(str(e))
+        typer.secho(f"auth port -> {port}", fg=typer.colors.GREEN)
 
 
 # --- sheet (project) commands ---------------------------------------------

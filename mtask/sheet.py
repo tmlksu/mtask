@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 import gspread
+from gspread.auth import local_server_flow
 
 from . import config
 
@@ -41,12 +42,16 @@ def _now() -> str:
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def build_client() -> gspread.Client:
+def build_client(oauth_port: int | None = None) -> gspread.Client:
     """Build a gspread client.
 
     Default: OAuth user authentication via a local browser flow (a temporary
-    HTTP server catches the redirect). The first call opens a browser; the
-    token is then cached at ~/.config/mtask/authorized_user.json.
+    HTTP server catches the redirect at http://localhost:<port>/). The first
+    call opens a browser; the token is then cached at
+    ~/.config/mtask/authorized_user.json.
+
+    The local server listens on `oauth_port` if given, else the configured
+    `[auth] port` (default 0 = an OS-chosen ephemeral port).
 
     Set auth method to 'service_account' (config or GOOGLE_APPLICATION_CREDENTIALS)
     for headless/server use.
@@ -75,7 +80,16 @@ def build_client() -> gspread.Client:
             "Create an OAuth client ID of type 'Desktop app' in Google Cloud, "
             "download the JSON, and save it there. Then run `mtask auth login`."
         )
+
+    port = config.get_auth_port() if oauth_port is None else oauth_port
+
+    def flow(client_config, scopes, port=port):
+        # gspread calls flow(client_config, scopes) without a port, so the
+        # chosen port is captured here as the default argument.
+        return local_server_flow(client_config, scopes, port=port)
+
     return gspread.oauth(
+        flow=flow,
         credentials_filename=str(client_secret),
         authorized_user_filename=str(config.authorized_user_path()),
     )
