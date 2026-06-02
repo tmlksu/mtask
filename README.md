@@ -5,12 +5,33 @@ One project = one Google Spreadsheet. Designed to be friendly for both humans an
 
 ## Install / run
 
-```bash
-# one-off
-uvx --from . mtask --help
+### From GitHub (no clone needed)
 
-# install as a tool
-uv tool install .
+```bash
+# one-off run
+uvx --from git+https://github.com/tmlksu/mtask mtask --help
+
+# pin a branch / tag / commit
+uvx --from git+https://github.com/tmlksu/mtask@main   mtask list
+uvx --from git+https://github.com/tmlksu/mtask@v0.1.0 mtask list
+
+# install as a persistent tool, then just `mtask ...`
+uv tool install git+https://github.com/tmlksu/mtask
+mtask --help
+uv tool upgrade mtask        # update later
+```
+
+Notes:
+- `--from` is the *package source*; the trailing `mtask` is the *command* to run.
+  Plain `uvx mtask` would look up `mtask` on PyPI instead — always pass `--from git+...`.
+- Private repo? Use SSH: `git+ssh://git@github.com/tmlksu/mtask`.
+- Following a branch? `uvx --refresh ...` (or `uv tool upgrade mtask`) re-fetches.
+
+### From a local checkout
+
+```bash
+uvx --from . mtask --help    # one-off
+uv tool install .            # install
 mtask --help
 ```
 
