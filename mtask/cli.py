@@ -277,16 +277,20 @@ def auth_login(
     port: Optional[int] = typer.Option(
         None, "--port", help="Local-server port for this login (default: configured port, 0 = ephemeral)."
     ),
+    path: Optional[str] = typer.Option(
+        None, "--path", help="Redirect endpoint path for this login (default: configured path, '/')."
+    ),
 ):
     """Run the OAuth browser flow now and cache the token.
 
     Opens a browser and starts a temporary local HTTP server to catch the
-    redirect at http://localhost:<port>/. Requires an OAuth client secret at
-    ~/.config/mtask/oauth_client.json (Desktop-app type).
+    redirect at http://localhost:<port><path>. Requires an OAuth client secret
+    at ~/.config/mtask/oauth_client.json (Desktop-app type).
     """
     try:
-        build_client(oauth_port=port)  # triggers the local-server flow if not yet authorized
-    except SheetError as e:
+        # triggers the local-server flow if not yet authorized
+        build_client(oauth_port=port, oauth_path=path)
+    except (SheetError, ValueError) as e:
         _err(str(e))
     typer.secho("authenticated; token cached", fg=typer.colors.GREEN)
 
@@ -327,6 +331,23 @@ def auth_port(
         except ValueError as e:
             _err(str(e))
         typer.secho(f"auth port -> {port}", fg=typer.colors.GREEN)
+
+
+@auth_app.command("path")
+def auth_path(
+    path: Optional[str] = typer.Argument(
+        None, help="Set OAuth redirect endpoint path, e.g. /oauth2callback. Omit to show current."
+    ),
+):
+    """Get or set the OAuth redirect endpoint path (default '/')."""
+    if path is None:
+        typer.echo(config.get_auth_path())
+    else:
+        try:
+            config.set_auth_path(path)
+        except ValueError as e:
+            _err(str(e))
+        typer.secho(f"auth path -> {config.get_auth_path()}", fg=typer.colors.GREEN)
 
 
 # --- sheet (project) commands ---------------------------------------------

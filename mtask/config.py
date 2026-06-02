@@ -85,6 +85,29 @@ def set_auth_port(port: int) -> None:
     save(data)
 
 
+def get_auth_path() -> str:
+    """Path of the OAuth redirect endpoint, e.g. '/' or '/oauth2callback'."""
+    return str(load().get("auth", {}).get("path", "/"))
+
+
+def normalize_auth_path(path: str) -> str:
+    path = path.strip()
+    if not path:
+        path = "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    if any(c in path for c in " ?#"):
+        raise ValueError("path must not contain spaces, '?' or '#'")
+    return path
+
+
+def set_auth_path(path: str) -> None:
+    path = normalize_auth_path(path)
+    data = load()
+    data.setdefault("auth", {})["path"] = path
+    save(data)
+
+
 def get_user() -> str | None:
     return load().get("user", {}).get("name")
 

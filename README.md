@@ -52,16 +52,23 @@ mtask supports two methods. **OAuth user login is the default.**
 Because you log in as yourself, any spreadsheet you can already edit just works
 — no extra sharing needed.
 
-#### Local-server port
+#### Local-server port & path
 
-By default the redirect listener uses port **0**, i.e. an OS-chosen ephemeral
-port (a Desktop-app OAuth client accepts any `localhost` loopback port, so no
-redirect URI needs registering). To pin a fixed port — e.g. behind a firewall:
+The redirect endpoint is `http://localhost:<port><path>`. Defaults: port **0**
+(an OS-chosen ephemeral port) and path **`/`**. A Desktop-app OAuth client
+accepts any `localhost` loopback port/path, so nothing needs registering.
+
+Pin them — e.g. behind a firewall, or to match a redirect URI registered on a
+"Web application" client:
 
 ```bash
-mtask auth port 8765         # persist a fixed port (0 = ephemeral, the default)
-mtask auth port              # show current
-mtask auth login --port 8765 # override just for this login
+mtask auth port 8765                  # persist a fixed port (0 = ephemeral)
+mtask auth path /oauth2callback       # persist a fixed redirect path ('/' default)
+mtask auth port                       # show current port
+mtask auth path                       # show current path
+
+# override just for one login (not persisted):
+mtask auth login --port 8765 --path /oauth2callback
 ```
 
 ### Service account (headless / servers)

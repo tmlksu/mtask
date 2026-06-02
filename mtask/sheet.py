@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import webbrowser
+import wsgiref.simple_server
+import wsgiref.util
 from typing import Any
 
 import gspread
-from gspread.auth import local_server_flow
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 from . import config
 
@@ -42,16 +45,66 @@ def _now() -> str:
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def build_client(oauth_port: int | None = None) -> gspread.Client:
+class _CaptureApp:
+    """Minimal WSGI app: records the redirect request URI and shows a message.
+
+    It accepts a request on ANY path, so the redirect endpoint path is whatever
+    we advertise in redirect_uri.
+    """
+
+    def __init__(self, message: str):
+        self.last_request_uri: str | None = None
+        self._message = message
+
+    def __call__(self, environ, start_response):
+        start_response("200 OK", [("Content-type", "text/plain; charset=utf-8")])
+        self.last_request_uri = wsgiref.util.request_uri(environ)
+        return [self._message.encode("utf-8")]
+
+
+class _QuietHandler(wsgiref.simple_server.WSGIRequestHandler):
+    def log_message(self, *args):  # silence default stderr logging
+        pass
+
+
+def _local_server_flow(client_config, scopes, *, host="localhost", port=0, path="/"):
+    """OAuth local-server flow with a configurable redirect endpoint path.
+
+    Equivalent to InstalledAppFlow.run_local_server, but advertises a
+    redirect_uri of http://<host>:<port><path> instead of always '/'.
+    """
+    flow = InstalledAppFlow.from_client_config(client_config, scopes)
+    app = _CaptureApp("mtask: authentication complete — you can close this tab.")
+    # Fail fast if the port is already in use.
+    wsgiref.simple_server.WSGIServer.allow_reuse_address = False
+    server = wsgiref.simple_server.make_server(host, port, app, handler_class=_QuietHandler)
+    try:
+        flow.redirect_uri = f"http://{host}:{server.server_port}{path}"
+        auth_url, _ = flow.authorization_url()
+        webbrowser.open(auth_url, new=1, autoraise=True)
+        print(f"mtask: opening browser to authorize. If it doesn't open, visit:\n{auth_url}")
+        server.handle_request()  # serve exactly one request (the redirect)
+        # oauthlib requires https in the authorization response.
+        authorization_response = app.last_request_uri.replace("http", "https")
+        flow.fetch_token(authorization_response=authorization_response)
+    finally:
+        server.server_close()
+    return flow.credentials
+
+
+def build_client(
+    oauth_port: int | None = None, oauth_path: str | None = None
+) -> gspread.Client:
     """Build a gspread client.
 
     Default: OAuth user authentication via a local browser flow (a temporary
-    HTTP server catches the redirect at http://localhost:<port>/). The first
-    call opens a browser; the token is then cached at
+    HTTP server catches the redirect at http://localhost:<port><path>). The
+    first call opens a browser; the token is then cached at
     ~/.config/mtask/authorized_user.json.
 
     The local server listens on `oauth_port` if given, else the configured
-    `[auth] port` (default 0 = an OS-chosen ephemeral port).
+    `[auth] port` (default 0 = an OS-chosen ephemeral port). The redirect
+    endpoint path is `oauth_path` if given, else `[auth] path` (default '/').
 
     Set auth method to 'service_account' (config or GOOGLE_APPLICATION_CREDENTIALS)
     for headless/server use.
@@ -82,11 +135,10 @@ def build_client(oauth_port: int | None = None) -> gspread.Client:
         )
 
     port = config.get_auth_port() if oauth_port is None else oauth_port
+    path = config.get_auth_path() if oauth_path is None else config.normalize_auth_path(oauth_path)
 
-    def flow(client_config, scopes, port=port):
-        # gspread calls flow(client_config, scopes) without a port, so the
-        # chosen port is captured here as the default argument.
-        return local_server_flow(client_config, scopes, port=port)
+    def flow(client_config, scopes):
+        return _local_server_flow(client_config, scopes, port=port, path=path)
 
     return gspread.oauth(
         flow=flow,
