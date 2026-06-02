@@ -1,0 +1,45 @@
+# --- Secrets / credentials (NEVER commit) ---
+# OAuth client secrets, cached tokens, service-account keys
+oauth_client.json
+authorized_user.json
+service_account.json
+credentials.json
+client_secret*.json
+*-key.json
+*.pem
+*.p12
+.env
+.env.*
+secrets/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+wheels/
+
+# --- Virtualenvs / tooling ---
+.venv/
+venv/
+env/
+.python-version
+# uv.lock is committed for reproducible installs.
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
