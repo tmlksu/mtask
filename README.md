@@ -102,7 +102,7 @@ mtask update T-0001 --status 完了 --note "merged"
 
 ## Sheet columns
 
-`ID` ・ `起票日` ・ `更新日` ・ `状態` ・ `完了予定日` ・ `起票者` ・ `作業者` ・ `タイトル` ・ `状況`
+`ID` ・ `起票日` ・ `状態` ・ `タイトル` ・ `起票者` ・ `作業者` ・ `状況` ・ `完了予定日` ・ `更新日`
 
 - `ID` is auto-assigned as `T-0001`, `T-0002`, …
 - `起票日` / `更新日` are managed automatically.

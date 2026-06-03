@@ -14,19 +14,19 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from . import config
 
-HEADERS = ["ID", "起票日", "更新日", "状態", "完了予定日", "起票者", "作業者", "タイトル", "状況"]
+HEADERS = ["ID", "起票日", "状態", "タイトル", "起票者", "作業者", "状況", "完了予定日", "更新日"]
 
 # Field key -> header label, used by the CLI to map flags to columns.
 FIELDS = {
     "id": "ID",
     "created": "起票日",
-    "updated": "更新日",
     "status": "状態",
-    "due": "完了予定日",
+    "title": "タイトル",
     "reporter": "起票者",
     "assignee": "作業者",
-    "title": "タイトル",
     "note": "状況",
+    "due": "完了予定日",
+    "updated": "更新日",
 }
 
 STATUSES = ["未着手", "着手中", "完了", "保留", "キャンセル"]
@@ -195,13 +195,13 @@ class TaskSheet:
         task = {
             "ID": self._next_id(records),
             "起票日": now,
-            "更新日": now,
             "状態": status,
-            "完了予定日": due,
+            "タイトル": title,
             "起票者": reporter,
             "作業者": assignee,
-            "タイトル": title,
             "状況": note,
+            "完了予定日": due,
+            "更新日": now,
         }
         self._ws.append_row([task[h] for h in HEADERS], value_input_option="USER_ENTERED")
         return task
