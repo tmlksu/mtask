@@ -80,7 +80,12 @@ def _local_server_flow(client_config, scopes, *, host="localhost", port=0, path=
     server = wsgiref.simple_server.make_server(host, port, app, handler_class=_QuietHandler)
     try:
         flow.redirect_uri = f"http://{host}:{server.server_port}{path}"
-        auth_url, _ = flow.authorization_url()
+        # access_type=offline + prompt=consent ensures Google returns a
+        # refresh_token; without it the cached authorized_user.json lacks one
+        # and fails to load next time ("missing fields refresh_token").
+        auth_url, _ = flow.authorization_url(
+            access_type="offline", prompt="consent"
+        )
         webbrowser.open(auth_url, new=1, autoraise=True)
         print(f"mtask: opening browser to authorize. If it doesn't open, visit:\n{auth_url}")
         server.handle_request()  # serve exactly one request (the redirect)
@@ -137,6 +142,11 @@ def build_client(
     port = config.get_auth_port() if oauth_port is None else oauth_port
     path = config.get_auth_path() if oauth_path is None else config.normalize_auth_path(oauth_path)
 
+    # Self-heal a malformed cached token (e.g. missing refresh_token, written
+    # by an older build): drop it so the browser flow re-runs instead of
+    # raising "Authorized user info was not in the expected format".
+    _drop_invalid_authorized_user()
+
     def flow(client_config, scopes):
         return _local_server_flow(client_config, scopes, port=port, path=path)
 
@@ -145,6 +155,31 @@ def build_client(
         credentials_filename=str(client_secret),
         authorized_user_filename=str(config.authorized_user_path()),
     )
+
+
+def _drop_invalid_authorized_user() -> None:
+    """Remove the cached OAuth token if it can't be loaded as valid creds.
+
+    gspread.oauth loads the token eagerly; a token without a refresh_token (or
+    otherwise malformed) makes it raise before the flow can re-run. Deleting it
+    lets the next call fall through to a fresh browser login.
+    """
+    token_path = config.authorized_user_path()
+    if not token_path.exists():
+        return
+    try:
+        import json
+
+        from google.oauth2.credentials import Credentials
+
+        with open(token_path, encoding="utf-8") as f:
+            info = json.load(f)
+        Credentials.from_authorized_user_info(info)
+    except Exception:
+        try:
+            token_path.unlink()
+        except OSError:
+            pass
 
 
 # Backwards-compatible alias.
