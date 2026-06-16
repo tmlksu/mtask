@@ -100,6 +100,36 @@ mtask get T-0001
 mtask update T-0001 --status 完了 --note "merged"
 ```
 
+### Bulk add / update
+
+Pass a JSON array via `--from` (`-` reads stdin). One Sheets request is used per
+call (`append_rows` / batch cell update), so it's also gentler on API limits.
+Object keys are the same field names as the flags (`title`, `status`, `due`,
+`assignee`, `reporter`, `note`; plus `id` for updates) — Japanese headers like
+`タイトル` also work.
+
+```bash
+# bulk add — IDs are auto-assigned
+mtask add --from tasks.json
+echo '[{"title":"task A"},{"title":"task B","status":"着手中"}]' | mtask add --from -
+
+# bulk update — each object needs an "id"
+mtask update --from updates.json
+echo '[{"id":"T-0001","status":"完了"},{"id":"T-0002","assignee":"alice"}]' \
+  | mtask update --from -
+```
+
+### Filter update (`--where` / `--set`)
+
+Update every task matching a condition. **It's a dry-run by default** — it prints
+what would change and applies nothing until you add `--yes`.
+
+```bash
+mtask update --where assignee=bob --set status=完了        # preview only
+mtask update --where assignee=bob --set status=完了 --yes  # apply
+mtask update --where 状態=着手中 --set assignee=alice --yes  # repeatable --where (AND)
+```
+
 ## Sheet columns
 
 `ID` ・ `起票日` ・ `状態` ・ `タイトル` ・ `起票者` ・ `作業者` ・ `状況` ・ `完了予定日` ・ `更新日`

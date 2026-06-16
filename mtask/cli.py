@@ -14,6 +14,9 @@ Notes for LLM callers:
   * `--status` only accepts: 未着手 / 着手中 / 完了 / 保留 / キャンセル.
     Any other value errors out and lists the allowed values.
   * `update` changes ONLY the fields you pass; omit a flag to leave it unchanged.
+  * Bulk: `add --from <json>` / `update --from <json>` take a JSON array
+    ('-' = stdin); `update --where k=v --set k=v` updates all matches
+    (dry-run unless --yes). Object keys match the flag names (id/title/status/…).
   * 起票日 / 更新日 / ID are managed automatically.
 """
 
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sys
 from enum import Enum
 from typing import Optional
 
@@ -28,8 +32,11 @@ import typer
 
 from . import config
 from .sheet import (
+    FIELDS,
     HIDDEN_BY_DEFAULT,
+    INPUT_ALIASES,
     NOTE_MAX_DEFAULT,
+    STATUSES,
     SheetError,
     TaskSheet,
     build_client,
@@ -92,21 +99,114 @@ def _truncate_note(note: str, limit: int) -> str:
     return note
 
 
+def _validate_status(value: str) -> str:
+    if value not in STATUSES:
+        _err(f"invalid 状態 '{value}'; allowed: {' / '.join(STATUSES)}")
+    return value
+
+
+# --- bulk / filter helpers -------------------------------------------------
+
+def _s(v) -> str:
+    """JSON value -> string; null becomes empty."""
+    return "" if v is None else str(v)
+
+
+def _read_json_array(src: str) -> list:
+    """Read a JSON array from a file path, or from stdin when src == '-'."""
+    try:
+        text = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
+    except OSError as e:
+        _err(f"cannot read --from {src!r}: {e}")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        _err(f"--from is not valid JSON: {e}")
+    if not isinstance(data, list):
+        _err("--from must be a JSON array of objects, e.g. [{\"title\": \"...\"}]")
+    return data
+
+
+def _normalize_keys(raw: dict, idx: int, *, allow_id: bool) -> dict[str, str]:
+    """Map an input object's keys to English field keys, rejecting bad ones."""
+    if not isinstance(raw, dict):
+        _err(f"item {idx}: must be a JSON object")
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        key = INPUT_ALIASES.get(k)
+        if key is None:
+            _err(f"item {idx}: unknown field '{k}'; allowed: {', '.join(sorted(set(INPUT_ALIASES) ))}")
+        if key in ("created", "updated"):
+            _err(f"item {idx}: '{k}' is managed automatically and can't be set")
+        if key == "id" and not allow_id:
+            _err(f"item {idx}: 'id' can't be set on add (auto-assigned)")
+        out[key] = _s(v)
+    return out
+
+
+def _changes_from_fields(fields: dict[str, str], note_max: int) -> dict[str, str]:
+    """English field dict -> validated {Japanese header: value} changes."""
+    changes: dict[str, str] = {}
+    if "status" in fields:
+        changes["状態"] = _validate_status(fields["status"])
+    if "due" in fields:
+        changes["完了予定日"] = _validate_due(fields["due"])
+    if "assignee" in fields:
+        changes["作業者"] = fields["assignee"]
+    if "reporter" in fields:
+        changes["起票者"] = fields["reporter"]
+    if "title" in fields:
+        changes["タイトル"] = fields["title"]
+    if "note" in fields:
+        changes["状況"] = _truncate_note(fields["note"], note_max)
+    return changes
+
+
+def _parse_pairs(pairs: Optional[list[str]]) -> dict[str, str]:
+    """Parse repeated 'key=value' options into an English field dict."""
+    out: dict[str, str] = {}
+    for p in pairs or []:
+        if "=" not in p:
+            _err(f"expected key=value, got '{p}'")
+        k, v = p.split("=", 1)
+        key = INPUT_ALIASES.get(k.strip())
+        if key is None:
+            _err(f"unknown field '{k.strip()}'; allowed: {', '.join(sorted(set(INPUT_ALIASES)))}")
+        out[key] = v
+    return out
+
+
 # --- task commands ---------------------------------------------------------
 
 @app.command()
 def add(
-    title: str = typer.Argument(..., help="Task title (必須)."),
+    title: Optional[str] = typer.Argument(None, help="Task title (必須 unless --from is used)."),
     status: Status = typer.Option(Status.not_started, "--status", help="状態."),
     due: str = typer.Option("", "--due", "-d", help="完了予定日 (YYYY-MM-DD). Empty allowed."),
     assignee: str = typer.Option("", "--assignee", "-a", help="作業者 (default: empty)."),
     reporter: Optional[str] = typer.Option(None, "--reporter", help="起票者 (default: configured user)."),
     note: str = typer.Option("", "--note", "-n", help="状況 / free-text notes."),
     note_max: int = typer.Option(NOTE_MAX_DEFAULT, "--note-max", help="Max chars for 状況 (overflow is cut)."),
+    from_file: Optional[str] = typer.Option(
+        None, "--from", help="Bulk add: JSON array of task objects ('-' = stdin). ID is auto-assigned."
+    ),
     sheet: Optional[str] = SHEET_OPT,
-    json_out: bool = typer.Option(False, "--json", help="Print created task as JSON."),
+    json_out: bool = typer.Option(False, "--json", help="Print created task(s) as JSON."),
 ):
-    """Add a task. Prints the new task ID."""
+    """Add a task (or many with --from). Prints the new task ID(s).
+
+    Single:  mtask add "fix bug" --status 着手中 --assignee bob
+    Bulk:    mtask add --from tasks.json     # [{"title": "...", "status": "..."}, ...]
+             echo '[{"title":"a"},{"title":"b"}]' | mtask add --from -
+    """
+    if from_file is not None:
+        if title is not None:
+            _err("pass either a title argument or --from, not both")
+        _add_bulk(from_file, note_max, sheet, json_out)
+        return
+    if title is None:
+        _err("missing TITLE; give a title argument or use --from for bulk add")
+
     rep = reporter or config.get_user() or ""
     due_v = _validate_due(due)
     note_v = _truncate_note(note, note_max)
@@ -128,9 +228,41 @@ def add(
         typer.secho(f"added {task['ID']}: {task['タイトル']}", fg=typer.colors.GREEN)
 
 
+def _add_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: bool) -> None:
+    items = _read_json_array(from_file)
+    default_reporter = config.get_user() or ""
+    normalized: list[dict[str, str]] = []
+    for idx, raw in enumerate(items):
+        f = _normalize_keys(raw, idx, allow_id=False)
+        if not f.get("title"):
+            _err(f"item {idx}: 'title' is required")
+        normalized.append(
+            {
+                "title": f["title"],
+                "status": _validate_status(f.get("status", Status.not_started.value)),
+                "due": _validate_due(f.get("due", "")),
+                "assignee": f.get("assignee", ""),
+                "reporter": f.get("reporter", default_reporter),
+                "note": _truncate_note(f.get("note", ""), note_max),
+            }
+        )
+    if not normalized:
+        _err("--from contained no tasks")
+    ts = _open(sheet)
+    try:
+        tasks = ts.add_many(normalized)
+    except SheetError as e:
+        _err(str(e))
+    if json_out:
+        typer.echo(json.dumps(tasks, ensure_ascii=False))
+    else:
+        ids = [t["ID"] for t in tasks]
+        typer.secho(f"added {len(ids)} tasks: {ids[0]}..{ids[-1]}", fg=typer.colors.GREEN)
+
+
 @app.command()
 def update(
-    task_id: str = typer.Argument(..., help="Task ID, e.g. T-0001."),
+    task_id: Optional[str] = typer.Argument(None, help="Task ID, e.g. T-0001 (single-update mode)."),
     status: Optional[Status] = typer.Option(None, "--status", help="状態."),
     due: Optional[str] = typer.Option(None, "--due", "-d", help="完了予定日 (YYYY-MM-DD, or '' to clear)."),
     assignee: Optional[str] = typer.Option(None, "--assignee", "-a", help="作業者."),
@@ -138,10 +270,41 @@ def update(
     title: Optional[str] = typer.Option(None, "--title", "-t", help="タイトル."),
     note: Optional[str] = typer.Option(None, "--note", "-n", help="状況."),
     note_max: int = typer.Option(NOTE_MAX_DEFAULT, "--note-max", help="Max chars for 状況."),
+    from_file: Optional[str] = typer.Option(
+        None, "--from", help="Bulk update: JSON array of objects, each with 'id' + fields ('-' = stdin)."
+    ),
+    where: Optional[list[str]] = typer.Option(
+        None, "--where", help="Filter mode: 'key=value' condition (repeatable, AND-ed)."
+    ),
+    set_: Optional[list[str]] = typer.Option(
+        None, "--set", help="Filter mode: 'key=value' field to set on every match (repeatable)."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Apply a filter update; without it, only a dry-run preview."),
     sheet: Optional[str] = SHEET_OPT,
-    json_out: bool = typer.Option(False, "--json", help="Print updated task as JSON."),
+    json_out: bool = typer.Option(False, "--json", help="Print updated task(s) as JSON."),
 ):
-    """Update a task's fields by ID. Only the fields you pass are changed."""
+    """Update tasks by ID, in bulk (--from), or by filter (--where/--set).
+
+    Single:  mtask update T-0001 --status 完了 --note merged
+    Bulk:    mtask update --from updates.json   # [{"id":"T-0001","status":"完了"}, ...]
+    Filter:  mtask update --where assignee=bob --set status=完了   (add --yes to apply)
+    """
+    filter_mode = bool(where) or bool(set_)
+    single_flags = any(v is not None for v in (status, due, assignee, reporter, title, note))
+
+    if from_file is not None:
+        if task_id is not None or filter_mode or single_flags:
+            _err("--from can't be combined with an ID, single-field flags, or --where/--set")
+        _update_bulk(from_file, note_max, sheet, json_out)
+        return
+    if filter_mode:
+        if task_id is not None or single_flags:
+            _err("--where/--set can't be combined with an ID or single-field flags")
+        _update_filter(where, set_, note_max, yes, sheet, json_out)
+        return
+    if task_id is None:
+        _err("missing ID; pass a task ID, or use --from / --where+--set for bulk updates")
+
     changes: dict[str, str] = {}
     if status is not None:
         changes["状態"] = status.value
@@ -170,6 +333,75 @@ def update(
         typer.echo(json.dumps(task, ensure_ascii=False))
     else:
         typer.secho(f"updated {task_id}: {', '.join(changes)}", fg=typer.colors.GREEN)
+
+
+def _update_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: bool) -> None:
+    items = _read_json_array(from_file)
+    updates: list[tuple[str, dict[str, str]]] = []
+    for idx, raw in enumerate(items):
+        f = _normalize_keys(raw, idx, allow_id=True)
+        tid = f.pop("id", "")
+        if not tid:
+            _err(f"item {idx}: 'id' is required for update")
+        changes = _changes_from_fields(f, note_max)
+        if not changes:
+            _err(f"item {idx} ({tid}): no fields to update")
+        updates.append((tid, changes))
+    if not updates:
+        _err("--from contained no updates")
+    ts = _open(sheet)
+    try:
+        applied = ts.update_many(updates)
+    except SheetError as e:
+        _err(str(e))
+    if json_out:
+        typer.echo(json.dumps(applied, ensure_ascii=False))
+    else:
+        typer.secho(f"updated {len(applied)} tasks: {', '.join(applied)}", fg=typer.colors.GREEN)
+
+
+def _update_filter(
+    where: Optional[list[str]],
+    set_: Optional[list[str]],
+    note_max: int,
+    yes: bool,
+    sheet: Optional[str],
+    json_out: bool,
+) -> None:
+    conds = {FIELDS[k]: v for k, v in _parse_pairs(where).items()}  # header -> expected value
+    changes = _changes_from_fields(_parse_pairs(set_), note_max)
+    if not changes:
+        _err("filter update needs at least one --set key=value")
+
+    ts = _open(sheet)
+    try:
+        rows = ts.records()
+    except SheetError as e:
+        _err(str(e))
+    matched = [r for r in rows if all(str(r.get(h, "")) == v for h, v in conds.items())]
+
+    if not matched:
+        typer.secho("(no tasks matched)", fg=typer.colors.BRIGHT_BLACK)
+        return
+    if not yes:
+        typer.secho(
+            f"dry-run: {len(matched)} task(s) match; would set "
+            f"{', '.join(f'{h}={v}' for h, v in changes.items())}. Re-run with --yes to apply.",
+            fg=typer.colors.YELLOW,
+        )
+        for r in matched:
+            typer.echo(f"  {r['ID']}  [{r.get('状態', '')}]  {r.get('タイトル', '')}")
+        return
+
+    updates = [(r["ID"], changes) for r in matched]
+    try:
+        applied = ts.update_many(updates)
+    except SheetError as e:
+        _err(str(e))
+    if json_out:
+        typer.echo(json.dumps(applied, ensure_ascii=False))
+    else:
+        typer.secho(f"updated {len(applied)} tasks: {', '.join(applied)}", fg=typer.colors.GREEN)
 
 
 @app.command(name="list")

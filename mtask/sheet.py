@@ -29,6 +29,10 @@ FIELDS = {
     "updated": "更新日",
 }
 
+# Input keys accepted by bulk/filter operations: either the English field key
+# (matching the CLI flags) or the Japanese header. Maps to the English key.
+INPUT_ALIASES = {**{k: k for k in FIELDS}, **{v: k for k, v in FIELDS.items()}}
+
 STATUSES = ["未着手", "着手中", "完了", "保留", "キャンセル"]
 DONE = "完了"
 # Terminal states hidden from `list` unless --show-completed is passed.
@@ -204,7 +208,7 @@ class TaskSheet:
     def records(self) -> list[dict[str, Any]]:
         return self._ws.get_all_records(expected_headers=HEADERS)
 
-    def _next_id(self, records: list[dict[str, Any]]) -> str:
+    def _max_num(self, records: list[dict[str, Any]]) -> int:
         mx = 0
         for r in records:
             v = str(r.get("ID", ""))
@@ -213,7 +217,23 @@ class TaskSheet:
                     mx = max(mx, int(v[2:]))
                 except ValueError:
                     pass
-        return f"T-{mx + 1:04d}"
+        return mx
+
+    def _next_id(self, records: list[dict[str, Any]]) -> str:
+        return f"T-{self._max_num(records) + 1:04d}"
+
+    def _build_task(self, fields: dict[str, str], task_id: str, now: str) -> dict[str, Any]:
+        return {
+            "ID": task_id,
+            "起票日": now,
+            "状態": fields.get("status", STATUSES[0]),
+            "タイトル": fields.get("title", ""),
+            "起票者": fields.get("reporter", ""),
+            "作業者": fields.get("assignee", ""),
+            "状況": fields.get("note", ""),
+            "完了予定日": fields.get("due", ""),
+            "更新日": now,
+        }
 
     def add(
         self,
@@ -227,19 +247,62 @@ class TaskSheet:
     ) -> dict[str, Any]:
         records = self.records()
         now = _now()
-        task = {
-            "ID": self._next_id(records),
-            "起票日": now,
-            "状態": status,
-            "タイトル": title,
-            "起票者": reporter,
-            "作業者": assignee,
-            "状況": note,
-            "完了予定日": due,
-            "更新日": now,
-        }
+        task = self._build_task(
+            {
+                "status": status,
+                "title": title,
+                "reporter": reporter,
+                "assignee": assignee,
+                "note": note,
+                "due": due,
+            },
+            self._next_id(records),
+            now,
+        )
         self._ws.append_row([task[h] for h in HEADERS], value_input_option="USER_ENTERED")
         return task
+
+    def add_many(self, items: list[dict[str, str]]) -> list[dict[str, Any]]:
+        """Append several tasks in one request. IDs are auto-assigned in order.
+
+        Each item is a dict of English field keys (title required; status,
+        reporter, assignee, note, due optional). Values are assumed validated.
+        """
+        if not items:
+            return []
+        records = self.records()
+        now = _now()
+        base = self._max_num(records)
+        tasks = [self._build_task(it, f"T-{base + i:04d}", now) for i, it in enumerate(items, start=1)]
+        self._ws.append_rows(
+            [[t[h] for h in HEADERS] for t in tasks],
+            value_input_option="USER_ENTERED",
+        )
+        return tasks
+
+    def update_many(self, updates: list[tuple[str, dict[str, str]]]) -> list[str]:
+        """Apply per-ID changes in one batch request.
+
+        `updates` is a list of (task_id, changes) where changes maps Japanese
+        headers to values. 更新日 is set automatically for every touched row.
+        Raises SheetError if any ID is missing (nothing is written).
+        """
+        if not updates:
+            return []
+        ids = self._ws.col_values(1)  # column A, including the header row
+        id_to_row = {v: i + 1 for i, v in enumerate(ids)}
+        now = _now()
+        cells: list[gspread.Cell] = []
+        applied: list[str] = []
+        for task_id, changes in updates:
+            row = id_to_row.get(task_id)
+            if row is None:
+                raise SheetError(f"task '{task_id}' not found")
+            for header, value in {**changes, "更新日": now}.items():
+                cells.append(gspread.Cell(row, HEADERS.index(header) + 1, value))
+            applied.append(task_id)
+        self._ws.update_cells(cells, value_input_option="USER_ENTERED")
+        return applied
 
     def _find_row(self, task_id: str) -> int:
         cell = self._ws.find(task_id, in_column=1)
