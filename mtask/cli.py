@@ -68,10 +68,10 @@ def _err(msg: str) -> None:
     raise typer.Exit(1)
 
 
-def _open(slug: Optional[str]) -> TaskSheet:
+def _open(slug: Optional[str], *, ensure_header: bool = True) -> TaskSheet:
     try:
         _, sid = config.resolve_spreadsheet_id(slug)
-        return TaskSheet(sid)
+        return TaskSheet(sid, ensure_header=ensure_header)
     except (LookupError, SheetError) as e:
         _err(str(e))
         raise  # unreachable
@@ -652,6 +652,51 @@ def sheet_list():
     for slug, sid in sheets.items():
         marker = "*" if slug == current else " "
         typer.echo(f"{marker} {slug}\t{sid}")
+
+
+@sheet_app.command("repair")
+def sheet_repair(
+    sheet: Optional[str] = SHEET_OPT,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Apply the repair; without it, only a dry-run preview."),
+    backup: bool = typer.Option(
+        True, "--backup/--no-backup", help="Copy the sheet to a backup tab before applying (default: on)."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print the repair plan as JSON."),
+):
+    """Reconcile an existing sheet's columns to the current schema.
+
+    Matches columns by header name, reorders them to the schema order, adds any
+    missing columns (empty), and preserves unknown columns on the right. Useful
+    after the column set changes. Dry-run by default; pass --yes to apply (a
+    backup tab is created unless --no-backup).
+    """
+    ts = _open(sheet, ensure_header=False)
+    try:
+        plan = ts.repair_header(apply=yes, backup=backup)
+    except SheetError as e:
+        _err(str(e))
+
+    if json_out:
+        typer.echo(json.dumps(plan, ensure_ascii=False))
+        return
+    if plan["already_ok"]:
+        typer.secho("header already matches the schema; nothing to do.", fg=typer.colors.GREEN)
+        return
+
+    typer.echo(f"current: {plan['current']}")
+    typer.echo(f"target:  {plan['target']}")
+    if plan["missing"]:
+        typer.secho(f"  + add missing columns: {plan['missing']}", fg=typer.colors.YELLOW)
+    if plan["extras"]:
+        typer.secho(f"  ~ keep unknown columns on the right: {plan['extras']}", fg=typer.colors.YELLOW)
+    typer.echo(f"  data rows: {plan['data_rows']}")
+
+    if not plan["applied"]:
+        typer.secho("dry-run: re-run with --yes to apply.", fg=typer.colors.YELLOW)
+        return
+    if plan.get("backup"):
+        typer.secho(f"backup created: tab '{plan['backup']}'", fg=typer.colors.BRIGHT_BLACK)
+    typer.secho("header repaired.", fg=typer.colors.GREEN)
 
 
 @sheet_app.command("use")

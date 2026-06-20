@@ -88,6 +88,7 @@ Check or switch the method anytime: `mtask auth method` / `mtask auth method oau
 mtask sheet add myproj <spreadsheet-id>   # register a project (slug -> sheet ID)
 mtask sheet list                          # list projects ( * = current )
 mtask sheet use myproj                    # switch current project
+mtask sheet repair                        # reconcile columns to the schema (dry-run)
 
 mtask user set alice                      # default reporter (起票者), git-style
 mtask user                                # show current user
@@ -167,10 +168,23 @@ a follow-up.
 All date fields accept `''` to clear them on `update`. `親ID` / `先行タスク` are
 stored as plain text for now — they aren't validated against existing IDs yet.
 
-> **Changing columns on an existing sheet:** the header is fixed and checked on
-> every run. Adding these columns means an existing populated sheet will report a
-> header mismatch — start from an empty sheet (mtask writes the header), or line
-> up the columns manually first.
+### Repairing an existing sheet's columns
+
+The header is fixed and checked on every run, so an existing populated sheet
+whose columns differ (e.g. from before these fields were added) reports a header
+mismatch. `mtask sheet repair` reconciles it:
+
+```bash
+mtask sheet repair            # dry-run: show what would change
+mtask sheet repair --yes      # apply (a backup tab is created first)
+mtask sheet repair --yes --no-backup
+```
+
+It matches columns **by header name**, reorders them to the schema order, adds
+any missing columns (empty), and keeps unknown columns on the right so no data
+is dropped. It reads the sheet once and rewrites it in one pass; cell formatting
+and formulas are **not** preserved (values are). By default it first copies the
+sheet to a `backup_<name>_<timestamp>` tab.
 
 ## Config
 

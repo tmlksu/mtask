@@ -200,9 +200,12 @@ _client = build_client
 
 
 class TaskSheet:
-    def __init__(self, spreadsheet_id: str):
+    def __init__(self, spreadsheet_id: str, *, ensure_header: bool = True):
         self._ws = build_client().open_by_key(spreadsheet_id).sheet1
-        self._ensure_header()
+        # `repair` opens with ensure_header=False so it can fix a mismatched
+        # header instead of erroring out on it.
+        if ensure_header:
+            self._ensure_header()
 
     def _ensure_header(self) -> None:
         first = self._ws.row_values(1)
@@ -316,3 +319,87 @@ class TaskSheet:
             col = HEADERS.index(header) + 1
             self._ws.update_cell(row, col, value)
         return self.get(task_id)
+
+    def _backup(self) -> str:
+        """Duplicate the worksheet to a timestamped backup tab; return its name."""
+        ss = self._ws.spreadsheet
+        title = f"backup_{self._ws.title}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        ss.duplicate_sheet(self._ws.id, new_sheet_name=title)
+        return title
+
+    def repair_header(self, *, apply: bool = False, backup: bool = True) -> dict[str, Any]:
+        """Reconcile the sheet's columns to HEADERS, preserving data.
+
+        Strategy: read everything, rebuild the table in memory mapping each
+        column by its header name (first occurrence), then rewrite once.
+        - reorders columns to HEADERS order,
+        - adds any missing columns (empty),
+        - keeps unknown/duplicate columns on the right (no data dropped).
+
+        With apply=False this only computes the plan (dry-run). With apply=True
+        it rewrites the sheet (clearing cell formatting/formulas — values are
+        kept) and, if backup=True, first copies the sheet to a backup tab.
+        """
+        values = self._ws.get_all_values()
+
+        # Empty sheet (or a blank header row): just lay down the header.
+        if not values or not any(values[0]):
+            plan = {
+                "current": values[0] if values else [],
+                "target": HEADERS,
+                "missing": HEADERS,
+                "extras": [],
+                "data_rows": max(0, len(values) - 1),
+                "already_ok": False,
+                "applied": False,
+                "backup": None,
+            }
+            if apply:
+                self._ws.update([HEADERS], "A1")
+                plan["applied"] = True
+            return plan
+
+        current = [h.strip() for h in values[0]]
+        # header name -> first source column index
+        src: dict[str, int] = {}
+        for i, name in enumerate(current):
+            if name and name not in src:
+                src[name] = i
+
+        consumed = {src[h] for h in HEADERS if h in src}
+        # Unknown / duplicate columns that still carry a header or data.
+        leftover = [
+            i
+            for i, name in enumerate(current)
+            if i not in consumed
+            and (name or any(i < len(row) and row[i] != "" for row in values[1:]))
+        ]
+        extras = [current[i] if current[i] else f"列{i + 1}" for i in leftover]
+        target = HEADERS + extras
+        missing = [h for h in HEADERS if h not in src]
+
+        plan: dict[str, Any] = {
+            "current": current,
+            "target": target,
+            "missing": missing,
+            "extras": extras,
+            "data_rows": len(values) - 1,
+            "already_ok": current == target,
+            "applied": False,
+            "backup": None,
+        }
+        if plan["already_ok"] or not apply:
+            return plan
+
+        src_cols = [src.get(h) for h in HEADERS] + leftover  # source index per target column
+        new_rows = [target]
+        for row in values[1:]:
+            new_rows.append([row[j] if (j is not None and j < len(row)) else "" for j in src_cols])
+
+        if backup:
+            plan["backup"] = self._backup()
+        self._ws.clear()
+        self._ws.resize(rows=max(len(new_rows), 1), cols=len(target))
+        self._ws.update(new_rows, "A1", value_input_option="RAW")
+        plan["applied"] = True
+        return plan
