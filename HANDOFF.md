@@ -94,7 +94,16 @@ Compute at read time, don't store.
   depth, siblings by ID. Numbers from the full tree (stable under filtering);
   ancestors of matches shown dimmed as context; orphan `(親?)` / cycle `(循環)`
   flagged and made roots so traversal terminates. JSON adds wbs/depth/context/
-  flags. Pure logic in `_wbs_tree` (cli.py), rendered by `_render_tree`.
+  flags. Pure logic in `wbs_tree` (sheet.py), rendered by `_render_tree` (cli.py).
+- `sheet view` — human-friendly in-sheet WBS. Generates a separate tab (default
+  `WBS`) via the Sheets API (no GAS): WBS numbers + indentation, native
+  collapsible row groups (`addDimensionGroup` over each node's descendant rows),
+  color by 状態 (conditional formatting), bold parents, frozen header, protected
+  (warning-only). Tab is deleted+recreated each run so formatting/groups never
+  accumulate; data sheet never touched. Logic in `TaskSheet.build_view`. Decided
+  against GAS (extra scopes, clasp/API deploy, dual codebase) since the native
+  collapsible outline is reachable from Python; revisit only if live auto-refresh
+  on manual edits becomes a primary need.
 
 **Next up:**
 1. `schedule check` — report (don't auto-fix): dependency cycles, 先行タスク not

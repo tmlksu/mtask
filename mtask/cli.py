@@ -40,6 +40,7 @@ from .sheet import (
     SheetError,
     TaskSheet,
     build_client,
+    wbs_tree,
 )
 
 app = typer.Typer(
@@ -451,70 +452,6 @@ def _update_filter(
         typer.secho(f"updated {len(applied)} tasks: {', '.join(applied)}", fg=typer.colors.GREEN)
 
 
-def _wbs_tree(records: list[dict]) -> tuple[list[tuple[str, int, str]], dict[str, str], dict[str, set], dict[str, dict]]:
-    """Build a WBS tree from 親ID links.
-
-    Returns (ordered, parent_map, flags, by_id) where:
-      - ordered: [(id, depth, wbs_number)] in display order (DFS, siblings by ID),
-      - parent_map: child id -> parent id (only real tree edges),
-      - flags: id -> set of {'orphan','cycle'},
-      - by_id: id -> record.
-    Orphans (親ID missing/self) and cycle members are treated as roots so the
-    traversal always terminates.
-    """
-    by_id = {str(r.get("ID")): r for r in records if str(r.get("ID", ""))}
-
-    def raw_parent(rid: str) -> str:
-        return str(by_id[rid].get("親ID") or "").strip()
-
-    def valid_parent(rid: str):
-        p = raw_parent(rid)
-        return p if (p and p in by_id and p != rid) else None
-
-    def in_cycle(rid: str) -> bool:
-        seen: set[str] = set()
-        cur = rid
-        while True:
-            p = valid_parent(cur)
-            if p is None:
-                return False
-            if p == rid or p in seen:
-                return True
-            seen.add(p)
-            cur = p
-
-    children: dict[str, list[str]] = {}
-    roots: list[str] = []
-    flags: dict[str, set] = {}
-    for rid in by_id:
-        rp = raw_parent(rid)
-        p = valid_parent(rid)
-        f: set[str] = set()
-        if rp and (rp not in by_id or rp == rid):
-            f.add("orphan")
-        if p is not None and in_cycle(rid):
-            f.add("cycle")
-            p = None
-        flags[rid] = f
-        (roots if p is None else children.setdefault(p, [])).append(rid)
-
-    roots.sort()
-    for cs in children.values():
-        cs.sort()
-    parent_map = {c: p for p, cs in children.items() for c in cs}
-
-    ordered: list[tuple[str, int, str]] = []
-
-    def dfs(rid: str, depth: int, wbs: str) -> None:
-        ordered.append((rid, depth, wbs))
-        for i, c in enumerate(children.get(rid, []), start=1):
-            dfs(c, depth + 1, f"{wbs}.{i}")
-
-    for i, rid in enumerate(roots, start=1):
-        dfs(rid, 0, str(i))
-    return ordered, parent_map, flags, by_id
-
-
 @app.command(name="list")
 def list_(
     status: Optional[Status] = typer.Option(None, "--status", help="Filter to a single 状態."),
@@ -575,7 +512,7 @@ def list_(
 
 
 def _render_tree(all_rows: list[dict], matches, json_out: bool) -> None:
-    ordered, parent_map, flags, by_id = _wbs_tree(all_rows)
+    ordered, parent_map, flags, by_id = wbs_tree(all_rows)
     matched = {rid for rid, r in by_id.items() if matches(r)}
     # include ancestors of every match as context
     visible = set(matched)
@@ -820,6 +757,30 @@ def sheet_repair(
     if plan.get("backup"):
         typer.secho(f"backup created: tab '{plan['backup']}'", fg=typer.colors.BRIGHT_BLACK)
     typer.secho("header repaired.", fg=typer.colors.GREEN)
+
+
+@sheet_app.command("view")
+def sheet_view(
+    sheet: Optional[str] = SHEET_OPT,
+    name: str = typer.Option("WBS", "--name", help="Name of the view tab to (re)generate."),
+    json_out: bool = typer.Option(False, "--json", help="Print a JSON summary."),
+):
+    """Generate a human-friendly, collapsible WBS view in a separate tab.
+
+    Reads the data sheet and writes a formatted 親ID tree to the view tab:
+    WBS numbers + indentation, color by 状態, bold parents, frozen header, and
+    native collapsible row groups. The tab is rebuilt from scratch each run and
+    protected (warning-only). The data sheet is never modified.
+    """
+    ts = _open(sheet)
+    try:
+        info = ts.build_view(view_title=name)
+    except SheetError as e:
+        _err(str(e))
+    if json_out:
+        typer.echo(json.dumps(info, ensure_ascii=False))
+    else:
+        typer.secho(f"view '{info['view']}' updated ({info['rows']} tasks).", fg=typer.colors.GREEN)
 
 
 @sheet_app.command("use")

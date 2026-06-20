@@ -44,6 +44,18 @@ INPUT_ALIASES = {**{k: k for k in FIELDS}, **{v: k for k, v in FIELDS.items()}}
 
 STATUSES = ["未着手", "着手中", "完了", "保留", "キャンセル"]
 DONE = "完了"
+
+# Human-friendly WBS view tab (built by `sheet view`).
+VIEW_TITLE_DEFAULT = "WBS"
+VIEW_HEADERS = ["WBS", "ID", "状態", "タイトル", "概要", "作業者", "開始予定日", "完了予定日"]
+# Background color per 状態 for the view (RGB 0..1).
+STATUS_COLORS = {
+    "未着手": (0.95, 0.95, 0.95),
+    "着手中": (0.82, 0.89, 0.99),
+    "完了": (0.85, 0.94, 0.83),
+    "保留": (1.00, 0.95, 0.80),
+    "キャンセル": (0.96, 0.80, 0.80),
+}
 # Terminal states hidden from `list` unless --show-completed is passed.
 HIDDEN_BY_DEFAULT = {"完了", "キャンセル"}
 # Google Sheets allows up to 50,000 characters per cell.
@@ -197,6 +209,72 @@ def _drop_invalid_authorized_user() -> None:
 
 # Backwards-compatible alias.
 _client = build_client
+
+
+def wbs_tree(
+    records: list[dict[str, Any]],
+) -> tuple[list[tuple[str, int, str]], dict[str, str], dict[str, set], dict[str, dict]]:
+    """Build a WBS tree from 親ID links.
+
+    Returns (ordered, parent_map, flags, by_id) where:
+      - ordered: [(id, depth, wbs_number)] in display order (DFS, siblings by ID),
+      - parent_map: child id -> parent id (only real tree edges),
+      - flags: id -> set of {'orphan','cycle'},
+      - by_id: id -> record.
+    Orphans (親ID missing/self) and cycle members are treated as roots so the
+    traversal always terminates.
+    """
+    by_id = {str(r.get("ID")): r for r in records if str(r.get("ID", ""))}
+
+    def raw_parent(rid: str) -> str:
+        return str(by_id[rid].get("親ID") or "").strip()
+
+    def valid_parent(rid: str):
+        p = raw_parent(rid)
+        return p if (p and p in by_id and p != rid) else None
+
+    def in_cycle(rid: str) -> bool:
+        seen: set[str] = set()
+        cur = rid
+        while True:
+            p = valid_parent(cur)
+            if p is None:
+                return False
+            if p == rid or p in seen:
+                return True
+            seen.add(p)
+            cur = p
+
+    children: dict[str, list[str]] = {}
+    roots: list[str] = []
+    flags: dict[str, set] = {}
+    for rid in by_id:
+        rp = raw_parent(rid)
+        p = valid_parent(rid)
+        f: set[str] = set()
+        if rp and (rp not in by_id or rp == rid):
+            f.add("orphan")
+        if p is not None and in_cycle(rid):
+            f.add("cycle")
+            p = None
+        flags[rid] = f
+        (roots if p is None else children.setdefault(p, [])).append(rid)
+
+    roots.sort()
+    for cs in children.values():
+        cs.sort()
+    parent_map = {c: p for p, cs in children.items() for c in cs}
+
+    ordered: list[tuple[str, int, str]] = []
+
+    def dfs(rid: str, depth: int, wbs: str) -> None:
+        ordered.append((rid, depth, wbs))
+        for i, c in enumerate(children.get(rid, []), start=1):
+            dfs(c, depth + 1, f"{wbs}.{i}")
+
+    for i, rid in enumerate(roots, start=1):
+        dfs(rid, 0, str(i))
+    return ordered, parent_map, flags, by_id
 
 
 class TaskSheet:
@@ -403,3 +481,136 @@ class TaskSheet:
         self._ws.update(new_rows, "A1", value_input_option="RAW")
         plan["applied"] = True
         return plan
+
+    def build_view(self, *, view_title: str = VIEW_TITLE_DEFAULT) -> dict[str, Any]:
+        """(Re)build a human-friendly, collapsible WBS view in a separate tab.
+
+        Renders the 親ID tree with WBS numbers + indentation, color-codes rows by
+        状態, bolds parent rows, freezes the header, and creates native row groups
+        (the +/- outline) so the hierarchy collapses. The tab is recreated from
+        scratch each run (so stale formatting/groups never accumulate) and is
+        protected (warning-only). The data sheet is never modified.
+        """
+        if view_title == self._ws.title:
+            raise SheetError(
+                f"view tab name '{view_title}' must differ from the data sheet; "
+                "pass --name to choose another."
+            )
+
+        ordered, _parent_map, flags, by_id = wbs_tree(self.records())
+
+        # value matrix --------------------------------------------------------
+        rows: list[list[str]] = [VIEW_HEADERS]
+        for rid, depth, wbs in ordered:
+            r = by_id[rid]
+            mark = ""
+            fl = flags.get(rid, ())
+            if "cycle" in fl:
+                mark += " (循環)"
+            if "orphan" in fl:
+                mark += " (親?)"
+            rows.append(
+                [
+                    wbs,
+                    rid,
+                    str(r.get("状態", "")),
+                    "  " * depth + str(r.get("タイトル", "")) + mark,
+                    str(r.get("概要", "")),
+                    str(r.get("作業者", "")),
+                    str(r.get("開始予定日", "")),
+                    str(r.get("完了予定日", "")),
+                ]
+            )
+
+        ss = self._ws.spreadsheet
+        try:
+            old = ss.worksheet(view_title)
+            ss.del_worksheet(old)
+        except gspread.WorksheetNotFound:
+            pass
+        view = ss.add_worksheet(title=view_title, rows=max(len(rows), 1), cols=len(VIEW_HEADERS))
+        view.update(rows, "A1", value_input_option="USER_ENTERED")
+
+        sid = view.id
+        ncols = len(VIEW_HEADERS)
+        n = len(ordered)
+        # subtree end (exclusive ordered index) per node, from depths
+        depths = [d for _, d, _ in ordered]
+
+        requests: list[dict] = [
+            # freeze header
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
+                    "fields": "gridProperties.frozenRowCount",
+                }
+            },
+            # bold header
+            {
+                "repeatCell": {
+                    "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": ncols},
+                    "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                    "fields": "userEnteredFormat.textFormat.bold",
+                }
+            },
+        ]
+
+        # color rows by 状態 (column C = 状態) via conditional formatting
+        for status, (cr, cg, cb) in STATUS_COLORS.items():
+            requests.append(
+                {
+                    "addConditionalFormatRule": {
+                        "index": 0,
+                        "rule": {
+                            "ranges": [
+                                {"sheetId": sid, "startRowIndex": 1, "endRowIndex": max(len(rows), 2), "startColumnIndex": 0, "endColumnIndex": ncols}
+                            ],
+                            "booleanRule": {
+                                "condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": f'=$C2="{status}"'}]},
+                                "format": {"backgroundColor": {"red": cr, "green": cg, "blue": cb}},
+                            },
+                        },
+                    }
+                }
+            )
+
+        # bold parent rows + collapsible groups over each node's descendants
+        for i in range(n):
+            j = i + 1
+            while j < n and depths[j] > depths[i]:
+                j += 1
+            if j == i + 1:
+                continue  # no children
+            parent_row = i + 1  # 0-based grid row (header at 0)
+            requests.append(
+                {
+                    "repeatCell": {
+                        "range": {"sheetId": sid, "startRowIndex": parent_row, "endRowIndex": parent_row + 1, "startColumnIndex": 0, "endColumnIndex": ncols},
+                        "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                        "fields": "userEnteredFormat.textFormat.bold",
+                    }
+                }
+            )
+            requests.append(
+                {
+                    "addDimensionGroup": {
+                        "range": {"sheetId": sid, "dimension": "ROWS", "startIndex": i + 2, "endIndex": j + 1}
+                    }
+                }
+            )
+
+        # protect the generated view (warning-only)
+        requests.append(
+            {
+                "addProtectedRange": {
+                    "protectedRange": {
+                        "range": {"sheetId": sid},
+                        "warningOnly": True,
+                        "description": "mtask generated WBS view — regenerate with `mtask sheet view`",
+                    }
+                }
+            }
+        )
+
+        ss.batch_update({"requests": requests})
+        return {"view": view_title, "rows": n}

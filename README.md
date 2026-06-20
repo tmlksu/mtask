@@ -89,6 +89,7 @@ mtask sheet add myproj <spreadsheet-id>   # register a project (slug -> sheet ID
 mtask sheet list                          # list projects ( * = current )
 mtask sheet use myproj                    # switch current project
 mtask sheet repair                        # reconcile columns to the schema (dry-run)
+mtask sheet view                          # (re)build a collapsible WBS view tab
 
 mtask user set alice                      # default reporter (起票者), git-style
 mtask user                                # show current user
@@ -146,6 +147,24 @@ echo '[{"id":"T-0001","status":"完了"},{"id":"T-0002","assignee":"alice"}]' \
 - Anomalies are flagged inline: `(親?)` = `親ID` points to a missing/own ID
   (shown as a root), `(循環)` = part of a parent cycle (the loop is broken).
 - `--json --tree` adds `wbs`, `depth`, `context`, and `flags` to each row.
+
+### In-sheet WBS view (`sheet view`)
+
+For people browsing the spreadsheet itself, `mtask sheet view` generates a
+formatted, **collapsible** WBS into a separate tab (default name `WBS`):
+
+```bash
+mtask sheet view              # build/refresh the 'WBS' tab
+mtask sheet view --name 計画   # use a different tab name
+```
+
+- WBS numbers + indentation, **native row groups** (the +/- outline) so the
+  hierarchy collapses, rows **color-coded by 状態**, parent rows bold, header
+  frozen.
+- The tab is rebuilt from scratch each run (no stale formatting/groups) and is
+  protected (warning-only). **The data sheet is never modified.**
+- It's a snapshot — re-run after changes. (No Apps Script needed; it's all done
+  through the Sheets API with your existing login.)
 
 ### Filter update (`--where` / `--set`)
 
