@@ -98,6 +98,11 @@ mtask list --show-completed --limit 100 --page 1
 mtask list --status 保留 --json
 mtask get T-0001
 mtask update T-0001 --status 完了 --note "merged"
+
+# WBS / scheduling
+mtask add "design API" --plan-start 2026-07-01 --due 2026-07-10
+mtask add "impl endpoint" --parent T-0001 --deps T-0001 --plan-start 2026-07-11
+mtask update T-0002 --start 2026-07-11 --status 着手中
 ```
 
 ### Bulk add / update
@@ -132,16 +137,40 @@ mtask update --where 状態=着手中 --set assignee=alice --yes  # repeatable -
 
 ## Sheet columns
 
-`ID` ・ `起票日` ・ `状態` ・ `タイトル` ・ `起票者` ・ `作業者` ・ `状況` ・ `完了予定日` ・ `更新日`
+`ID` ・ `親ID` ・ `起票日` ・ `状態` ・ `タイトル` ・ `概要` ・ `起票者` ・ `作業者` ・
+`先行タスク` ・ `状況` ・ `開始予定日` ・ `完了予定日` ・ `開始日` ・ `完了日` ・ `更新日`
 
 - `ID` is auto-assigned as `T-0001`, `T-0002`, …
 - `起票日` / `更新日` are managed automatically.
 - `状態` is restricted to: **未着手 / 着手中 / 完了 / 保留 / キャンセル**.
-- `完了予定日` (due date) must be `YYYY-MM-DD` (or empty); pass `--due ''` to clear it.
-- `list` hides **完了** and **キャンセル** by default; use `--show-completed`
-  (or `--status` to target a specific state).
 - `状況` is truncated to 50,000 chars by default — the Google Sheets per-cell
   limit — with a warning; override with `--note-max`.
+- `list` hides **完了** and **キャンセル** by default; use `--show-completed`
+  (or `--status` to target a specific state).
+
+### WBS / scheduling fields
+
+These let you grow a flat task list into a schedule. The sheet stores the raw
+values; computed views (tree display, dependency/schedule checks) are planned as
+a follow-up.
+
+| Field | Flag | Notes |
+|-------|------|-------|
+| `親ID` | `--parent` | Parent task ID for a subtask (WBS hierarchy). Empty = top-level. |
+| `先行タスク` | `--deps` | Predecessor task IDs, comma-separated (e.g. `T-0003,T-0005`). |
+| `概要` | `--summary` | Short description (distinct from `状況`, the running notes). |
+| `開始予定日` | `--plan-start` | Planned start. `YYYY-MM-DD` or empty. |
+| `完了予定日` | `--due` / `-d` | Planned finish (deadline). `YYYY-MM-DD` or empty. |
+| `開始日` | `--start` | Actual start. `YYYY-MM-DD` or empty. |
+| `完了日` | `--finish` | Actual finish. `YYYY-MM-DD` or empty. |
+
+All date fields accept `''` to clear them on `update`. `親ID` / `先行タスク` are
+stored as plain text for now — they aren't validated against existing IDs yet.
+
+> **Changing columns on an existing sheet:** the header is fixed and checked on
+> every run. Adding these columns means an existing populated sheet will report a
+> header mismatch — start from an empty sheet (mtask writes the header), or line
+> up the columns manually first.
 
 ## Config
 

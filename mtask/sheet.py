@@ -14,20 +14,29 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from . import config
 
-HEADERS = ["ID", "起票日", "状態", "タイトル", "起票者", "作業者", "状況", "完了予定日", "更新日"]
-
-# Field key -> header label, used by the CLI to map flags to columns.
+# Field key -> header label. Order here defines the column order via HEADERS.
+# Planned dates: 開始予定日 (plan_start) / 完了予定日 (due).
+# Actual dates:  開始日 (start) / 完了日 (finish).
+# Relationships: 親ID (parent, for WBS hierarchy) / 先行タスク (deps, predecessors).
 FIELDS = {
     "id": "ID",
+    "parent": "親ID",
     "created": "起票日",
     "status": "状態",
     "title": "タイトル",
+    "summary": "概要",
     "reporter": "起票者",
     "assignee": "作業者",
+    "deps": "先行タスク",
     "note": "状況",
+    "plan_start": "開始予定日",
     "due": "完了予定日",
+    "start": "開始日",
+    "finish": "完了日",
     "updated": "更新日",
 }
+
+HEADERS = list(FIELDS.values())
 
 # Input keys accepted by bulk/filter operations: either the English field key
 # (matching the CLI flags) or the Japanese header. Maps to the English key.
@@ -223,50 +232,34 @@ class TaskSheet:
         return f"T-{self._max_num(records) + 1:04d}"
 
     def _build_task(self, fields: dict[str, str], task_id: str, now: str) -> dict[str, Any]:
-        return {
-            "ID": task_id,
-            "起票日": now,
-            "状態": fields.get("status", STATUSES[0]),
-            "タイトル": fields.get("title", ""),
-            "起票者": fields.get("reporter", ""),
-            "作業者": fields.get("assignee", ""),
-            "状況": fields.get("note", ""),
-            "完了予定日": fields.get("due", ""),
-            "更新日": now,
-        }
-
-    def add(
-        self,
-        *,
-        title: str,
-        status: str,
-        reporter: str,
-        assignee: str,
-        note: str,
-        due: str = "",
-    ) -> dict[str, Any]:
-        records = self.records()
-        now = _now()
-        task = self._build_task(
+        task = {h: "" for h in HEADERS}
+        task.update(
             {
-                "status": status,
-                "title": title,
-                "reporter": reporter,
-                "assignee": assignee,
-                "note": note,
-                "due": due,
-            },
-            self._next_id(records),
-            now,
+                "ID": task_id,
+                "起票日": now,
+                "状態": fields.get("status", STATUSES[0]),
+                "更新日": now,
+            }
         )
-        self._ws.append_row([task[h] for h in HEADERS], value_input_option="USER_ENTERED")
+        # Map any provided English field keys (except auto-managed ones) onto
+        # their columns.
+        for key, header in FIELDS.items():
+            if key in ("id", "created", "status", "updated"):
+                continue
+            if key in fields:
+                task[header] = fields[key]
         return task
+
+    def add(self, fields: dict[str, str]) -> dict[str, Any]:
+        """Append a single task from an English-key field dict (see add_many)."""
+        return self.add_many([fields])[0]
 
     def add_many(self, items: list[dict[str, str]]) -> list[dict[str, Any]]:
         """Append several tasks in one request. IDs are auto-assigned in order.
 
-        Each item is a dict of English field keys (title required; status,
-        reporter, assignee, note, due optional). Values are assumed validated.
+        Each item is a dict of English field keys (title required; the rest —
+        status, reporter, assignee, note, summary, parent, deps, and the date
+        fields — optional). Values are assumed already validated.
         """
         if not items:
             return []

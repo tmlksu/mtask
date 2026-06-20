@@ -77,14 +77,14 @@ def _open(slug: Optional[str]) -> TaskSheet:
         raise  # unreachable
 
 
-def _validate_due(due: str) -> str:
+def _validate_date(value: str, label: str = "date") -> str:
     """Accept an empty string or a YYYY-MM-DD date; error otherwise."""
-    if due == "":
+    if value == "":
         return ""
     try:
-        return dt.date.fromisoformat(due).isoformat()
+        return dt.date.fromisoformat(value).isoformat()
     except ValueError:
-        _err(f"invalid due date '{due}'; expected YYYY-MM-DD (e.g. 2026-06-30) or empty")
+        _err(f"invalid {label} '{value}'; expected YYYY-MM-DD (e.g. 2026-06-30) or empty")
         raise  # unreachable
 
 
@@ -144,22 +144,57 @@ def _normalize_keys(raw: dict, idx: int, *, allow_id: bool) -> dict[str, str]:
     return out
 
 
+# English field key -> Japanese header, for plain (unvalidated) string fields.
+_PLAIN_FIELDS = {
+    "parent": "親ID",
+    "title": "タイトル",
+    "summary": "概要",
+    "reporter": "起票者",
+    "assignee": "作業者",
+    "deps": "先行タスク",
+}
+# English field key -> (header, label) for date fields validated as YYYY-MM-DD.
+_DATE_FIELDS = {
+    "plan_start": ("開始予定日", "開始予定日"),
+    "due": ("完了予定日", "完了予定日"),
+    "start": ("開始日", "開始日"),
+    "finish": ("完了日", "完了日"),
+}
+
+
 def _changes_from_fields(fields: dict[str, str], note_max: int) -> dict[str, str]:
     """English field dict -> validated {Japanese header: value} changes."""
     changes: dict[str, str] = {}
     if "status" in fields:
         changes["状態"] = _validate_status(fields["status"])
-    if "due" in fields:
-        changes["完了予定日"] = _validate_due(fields["due"])
-    if "assignee" in fields:
-        changes["作業者"] = fields["assignee"]
-    if "reporter" in fields:
-        changes["起票者"] = fields["reporter"]
-    if "title" in fields:
-        changes["タイトル"] = fields["title"]
     if "note" in fields:
         changes["状況"] = _truncate_note(fields["note"], note_max)
+    for key, header in _PLAIN_FIELDS.items():
+        if key in fields:
+            changes[header] = fields[key]
+    for key, (header, label) in _DATE_FIELDS.items():
+        if key in fields:
+            changes[header] = _validate_date(fields[key], label)
     return changes
+
+
+def _prepare_add(f: dict[str, str], note_max: int, default_reporter: str) -> dict[str, str]:
+    """Validate an English-key field dict for `add`; fills defaults."""
+    if not f.get("title"):
+        _err("'title' is required")
+    out = {
+        "title": f["title"],
+        "status": _validate_status(f.get("status", Status.not_started.value)),
+        "note": _truncate_note(f.get("note", ""), note_max),
+        "reporter": f.get("reporter", default_reporter),
+    }
+    for key, header in _PLAIN_FIELDS.items():
+        if key in ("title", "reporter"):
+            continue
+        out[key] = f.get(key, "")
+    for key, (header, label) in _DATE_FIELDS.items():
+        out[key] = _validate_date(f.get(key, ""), label)
+    return out
 
 
 def _parse_pairs(pairs: Optional[list[str]]) -> dict[str, str]:
@@ -182,7 +217,13 @@ def _parse_pairs(pairs: Optional[list[str]]) -> dict[str, str]:
 def add(
     title: Optional[str] = typer.Argument(None, help="Task title (必須 unless --from is used)."),
     status: Status = typer.Option(Status.not_started, "--status", help="状態."),
+    summary: str = typer.Option("", "--summary", help="概要 / short description."),
+    parent: str = typer.Option("", "--parent", help="親ID for a subtask (WBS), e.g. T-0001."),
+    deps: str = typer.Option("", "--deps", help="先行タスク (predecessor IDs, comma-separated)."),
+    plan_start: str = typer.Option("", "--plan-start", help="開始予定日 (YYYY-MM-DD)."),
     due: str = typer.Option("", "--due", "-d", help="完了予定日 (YYYY-MM-DD). Empty allowed."),
+    start: str = typer.Option("", "--start", help="開始日 / actual start (YYYY-MM-DD)."),
+    finish: str = typer.Option("", "--finish", help="完了日 / actual finish (YYYY-MM-DD)."),
     assignee: str = typer.Option("", "--assignee", "-a", help="作業者 (default: empty)."),
     reporter: Optional[str] = typer.Option(None, "--reporter", help="起票者 (default: configured user)."),
     note: str = typer.Option("", "--note", "-n", help="状況 / free-text notes."),
@@ -207,19 +248,25 @@ def add(
     if title is None:
         _err("missing TITLE; give a title argument or use --from for bulk add")
 
-    rep = reporter or config.get_user() or ""
-    due_v = _validate_due(due)
-    note_v = _truncate_note(note, note_max)
+    f = {
+        "title": title,
+        "status": status.value,
+        "summary": summary,
+        "parent": parent,
+        "deps": deps,
+        "plan_start": plan_start,
+        "due": due,
+        "start": start,
+        "finish": finish,
+        "assignee": assignee,
+        "note": note,
+    }
+    if reporter is not None:
+        f["reporter"] = reporter
+    fields = _prepare_add(f, note_max, config.get_user() or "")
     ts = _open(sheet)
     try:
-        task = ts.add(
-            title=title,
-            status=status.value,
-            due=due_v,
-            reporter=rep,
-            assignee=assignee,
-            note=note_v,
-        )
+        task = ts.add(fields)
     except SheetError as e:
         _err(str(e))
     if json_out:
@@ -236,16 +283,7 @@ def _add_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: boo
         f = _normalize_keys(raw, idx, allow_id=False)
         if not f.get("title"):
             _err(f"item {idx}: 'title' is required")
-        normalized.append(
-            {
-                "title": f["title"],
-                "status": _validate_status(f.get("status", Status.not_started.value)),
-                "due": _validate_due(f.get("due", "")),
-                "assignee": f.get("assignee", ""),
-                "reporter": f.get("reporter", default_reporter),
-                "note": _truncate_note(f.get("note", ""), note_max),
-            }
-        )
+        normalized.append(_prepare_add(f, note_max, default_reporter))
     if not normalized:
         _err("--from contained no tasks")
     ts = _open(sheet)
@@ -264,7 +302,13 @@ def _add_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: boo
 def update(
     task_id: Optional[str] = typer.Argument(None, help="Task ID, e.g. T-0001 (single-update mode)."),
     status: Optional[Status] = typer.Option(None, "--status", help="状態."),
+    summary: Optional[str] = typer.Option(None, "--summary", help="概要 / short description."),
+    parent: Optional[str] = typer.Option(None, "--parent", help="親ID (WBS); '' to clear."),
+    deps: Optional[str] = typer.Option(None, "--deps", help="先行タスク (comma-separated); '' to clear."),
+    plan_start: Optional[str] = typer.Option(None, "--plan-start", help="開始予定日 (YYYY-MM-DD, '' to clear)."),
     due: Optional[str] = typer.Option(None, "--due", "-d", help="完了予定日 (YYYY-MM-DD, or '' to clear)."),
+    start: Optional[str] = typer.Option(None, "--start", help="開始日 / actual start (YYYY-MM-DD, '' to clear)."),
+    finish: Optional[str] = typer.Option(None, "--finish", help="完了日 / actual finish (YYYY-MM-DD, '' to clear)."),
     assignee: Optional[str] = typer.Option(None, "--assignee", "-a", help="作業者."),
     reporter: Optional[str] = typer.Option(None, "--reporter", help="起票者."),
     title: Optional[str] = typer.Option(None, "--title", "-t", help="タイトル."),
@@ -289,39 +333,42 @@ def update(
     Bulk:    mtask update --from updates.json   # [{"id":"T-0001","status":"完了"}, ...]
     Filter:  mtask update --where assignee=bob --set status=完了   (add --yes to apply)
     """
+    single = {
+        "status": status.value if status is not None else None,
+        "summary": summary,
+        "parent": parent,
+        "deps": deps,
+        "plan_start": plan_start,
+        "due": due,
+        "start": start,
+        "finish": finish,
+        "assignee": assignee,
+        "reporter": reporter,
+        "title": title,
+        "note": note,
+    }
     filter_mode = bool(where) or bool(set_)
-    single_flags = any(v is not None for v in (status, due, assignee, reporter, title, note))
+    single_fields = {k: v for k, v in single.items() if v is not None}
 
     if from_file is not None:
-        if task_id is not None or filter_mode or single_flags:
+        if task_id is not None or filter_mode or single_fields:
             _err("--from can't be combined with an ID, single-field flags, or --where/--set")
         _update_bulk(from_file, note_max, sheet, json_out)
         return
     if filter_mode:
-        if task_id is not None or single_flags:
+        if task_id is not None or single_fields:
             _err("--where/--set can't be combined with an ID or single-field flags")
         _update_filter(where, set_, note_max, yes, sheet, json_out)
         return
     if task_id is None:
         _err("missing ID; pass a task ID, or use --from / --where+--set for bulk updates")
 
-    changes: dict[str, str] = {}
-    if status is not None:
-        changes["状態"] = status.value
-    if due is not None:
-        changes["完了予定日"] = _validate_due(due)
-    if assignee is not None:
-        changes["作業者"] = assignee
-    if reporter is not None:
-        changes["起票者"] = reporter
-    if title is not None:
-        changes["タイトル"] = title
-    if note is not None:
-        changes["状況"] = _truncate_note(note, note_max)
+    changes = _changes_from_fields(single_fields, note_max)
     if not changes:
         _err(
-            "no fields to update; pass at least one of "
-            "--status/--due/--assignee/--reporter/--title/--note"
+            "no fields to update; pass at least one field flag "
+            "(--status/--title/--summary/--parent/--deps/--assignee/--reporter/"
+            "--note/--plan-start/--due/--start/--finish)"
         )
 
     ts = _open(sheet)
