@@ -85,18 +85,23 @@ authorized_user.json, service_account.json, client_secret*.json, *-key.json,
 Verify nothing secret is staged before each push. Remote:
 `git@github.com:tmlksu/mtask.git` (branch `main`, push as user `tmlksu`).
 
-## Next up — WBS / tree & scheduling views
+## WBS / tree & scheduling views
 
-Columns exist; the relationship-aware **views/validation** are deferred and are
-the next milestone. Planned (compute at read time, don't store):
+Compute at read time, don't store.
 
-1. `list --tree` — indent children under `親ID`; derive a WBS number (1.2.3) from
-   the parent tree on display. Decide ordering (by ID vs WBS) and cycle/orphan
-   handling (a parent ID that doesn't exist).
-2. `schedule check` — report (don't auto-fix): dependency cycles, 先行タスク not
+**Done:**
+- `list --tree` — WBS hierarchy from `親ID`, derived numbers (1.2.3), indent by
+  depth, siblings by ID. Numbers from the full tree (stable under filtering);
+  ancestors of matches shown dimmed as context; orphan `(親?)` / cycle `(循環)`
+  flagged and made roots so traversal terminates. JSON adds wbs/depth/context/
+  flags. Pure logic in `_wbs_tree` (cli.py), rendered by `_render_tree`.
+
+**Next up:**
+1. `schedule check` — report (don't auto-fix): dependency cycles, 先行タスク not
    yet 完了 while a task is 着手中, a task's 開始予定日 before a predecessor's
-   完了予定日, missing/dangling parent or predecessor IDs.
-3. Optional conveniences: auto-set 完了日 when 状態→完了 (and 開始日 on →着手中);
+   完了予定日, missing/dangling parent or predecessor IDs. (`先行タスク` is a
+   comma-separated ID list; parse + validate against existing IDs.)
+2. Optional conveniences: auto-set 完了日 when 状態→完了 (and 開始日 on →着手中);
    progress rollup of children to a parent.
 
 Design rules to honor: store raw inputs only; relationships are ID references;

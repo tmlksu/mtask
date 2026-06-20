@@ -451,27 +451,103 @@ def _update_filter(
         typer.secho(f"updated {len(applied)} tasks: {', '.join(applied)}", fg=typer.colors.GREEN)
 
 
+def _wbs_tree(records: list[dict]) -> tuple[list[tuple[str, int, str]], dict[str, str], dict[str, set], dict[str, dict]]:
+    """Build a WBS tree from 親ID links.
+
+    Returns (ordered, parent_map, flags, by_id) where:
+      - ordered: [(id, depth, wbs_number)] in display order (DFS, siblings by ID),
+      - parent_map: child id -> parent id (only real tree edges),
+      - flags: id -> set of {'orphan','cycle'},
+      - by_id: id -> record.
+    Orphans (親ID missing/self) and cycle members are treated as roots so the
+    traversal always terminates.
+    """
+    by_id = {str(r.get("ID")): r for r in records if str(r.get("ID", ""))}
+
+    def raw_parent(rid: str) -> str:
+        return str(by_id[rid].get("親ID") or "").strip()
+
+    def valid_parent(rid: str):
+        p = raw_parent(rid)
+        return p if (p and p in by_id and p != rid) else None
+
+    def in_cycle(rid: str) -> bool:
+        seen: set[str] = set()
+        cur = rid
+        while True:
+            p = valid_parent(cur)
+            if p is None:
+                return False
+            if p == rid or p in seen:
+                return True
+            seen.add(p)
+            cur = p
+
+    children: dict[str, list[str]] = {}
+    roots: list[str] = []
+    flags: dict[str, set] = {}
+    for rid in by_id:
+        rp = raw_parent(rid)
+        p = valid_parent(rid)
+        f: set[str] = set()
+        if rp and (rp not in by_id or rp == rid):
+            f.add("orphan")
+        if p is not None and in_cycle(rid):
+            f.add("cycle")
+            p = None
+        flags[rid] = f
+        (roots if p is None else children.setdefault(p, [])).append(rid)
+
+    roots.sort()
+    for cs in children.values():
+        cs.sort()
+    parent_map = {c: p for p, cs in children.items() for c in cs}
+
+    ordered: list[tuple[str, int, str]] = []
+
+    def dfs(rid: str, depth: int, wbs: str) -> None:
+        ordered.append((rid, depth, wbs))
+        for i, c in enumerate(children.get(rid, []), start=1):
+            dfs(c, depth + 1, f"{wbs}.{i}")
+
+    for i, rid in enumerate(roots, start=1):
+        dfs(rid, 0, str(i))
+    return ordered, parent_map, flags, by_id
+
+
 @app.command(name="list")
 def list_(
     status: Optional[Status] = typer.Option(None, "--status", help="Filter to a single 状態."),
     show_completed: bool = typer.Option(False, "--show-completed", help="Include 完了 tasks (hidden by default)."),
+    tree: bool = typer.Option(False, "--tree", help="Show a WBS tree by 親ID (shows all; ignores --limit/--page)."),
     limit: int = typer.Option(50, "--limit", "-l", help="Max rows per page."),
     page: int = typer.Option(0, "--page", "-p", help="Page number, 0-indexed."),
     sheet: Optional[str] = SHEET_OPT,
     json_out: bool = typer.Option(False, "--json", help="Print rows as a JSON array."),
 ):
-    """List tasks. By default 完了 is hidden; use --show-completed to include it."""
+    """List tasks. By default 完了/キャンセル are hidden; --show-completed includes them.
+
+    --tree renders a WBS hierarchy from 親ID with derived numbers (1.2.3).
+    Ancestors of a matching task are always shown (dimmed) for context.
+    """
     ts = _open(sheet)
     try:
-        rows = ts.records()
+        all_rows = ts.records()
     except SheetError as e:
         _err(str(e))
 
-    if status is not None:
-        rows = [r for r in rows if r.get("状態") == status.value]
-    elif not show_completed:
-        rows = [r for r in rows if r.get("状態") not in HIDDEN_BY_DEFAULT]
+    def matches(r: dict) -> bool:
+        if status is not None:
+            return r.get("状態") == status.value
+        if not show_completed:
+            return r.get("状態") not in HIDDEN_BY_DEFAULT
+        return True
 
+    if tree:
+        _render_tree(all_rows, matches, json_out)
+        return
+
+    rows = [r for r in all_rows if matches(r)]
     total = len(rows)
     start = page * limit
     page_rows = rows[start : start + limit]
@@ -496,6 +572,53 @@ def list_(
         )
     shown = min(start + limit, total)
     typer.secho(f"-- {start + 1}-{shown} of {total} (page {page}) --", fg=typer.colors.BRIGHT_BLACK)
+
+
+def _render_tree(all_rows: list[dict], matches, json_out: bool) -> None:
+    ordered, parent_map, flags, by_id = _wbs_tree(all_rows)
+    matched = {rid for rid, r in by_id.items() if matches(r)}
+    # include ancestors of every match as context
+    visible = set(matched)
+    for rid in matched:
+        cur = rid
+        while cur in parent_map:
+            cur = parent_map[cur]
+            visible.add(cur)
+
+    if json_out:
+        out = []
+        for rid, depth, wbs in ordered:
+            if rid not in visible:
+                continue
+            rec = dict(by_id[rid])
+            rec["wbs"] = wbs
+            rec["depth"] = depth
+            rec["context"] = rid not in matched
+            rec["flags"] = sorted(flags.get(rid, ()))
+            out.append(rec)
+        typer.echo(json.dumps(out, ensure_ascii=False))
+        return
+
+    printed = False
+    for rid, depth, wbs in ordered:
+        if rid not in visible:
+            continue
+        printed = True
+        r = by_id[rid]
+        line = f"{wbs:<8}{'  ' * depth}{rid}  [{r.get('状態', '')}]  {r.get('タイトル', '')}"
+        if r.get("作業者"):
+            line += f"  @{r['作業者']}"
+        if r.get("完了予定日"):
+            line += f"  〆{r['完了予定日']}"
+        fl = flags.get(rid, ())
+        if "cycle" in fl:
+            line += " (循環)"
+        if "orphan" in fl:
+            line += " (親?)"
+        # ancestors shown only for context are dimmed
+        typer.secho(line, fg=None if rid in matched else typer.colors.BRIGHT_BLACK)
+    if not printed:
+        typer.secho("(no tasks)", fg=typer.colors.BRIGHT_BLACK)
 
 
 @app.command()

@@ -95,6 +95,7 @@ mtask user                                # show current user
 
 mtask add "fix login bug" --status 着手中 --assignee bob
 mtask list                                # open tasks (完了 hidden)
+mtask list --tree                         # WBS hierarchy by 親ID (numbers 1.2.3)
 mtask list --show-completed --limit 100 --page 1
 mtask list --status 保留 --json
 mtask get T-0001
@@ -124,6 +125,27 @@ mtask update --from updates.json
 echo '[{"id":"T-0001","status":"完了"},{"id":"T-0002","assignee":"alice"}]' \
   | mtask update --from -
 ```
+
+### WBS tree view (`list --tree`)
+
+`mtask list --tree` renders the `親ID` hierarchy with derived WBS numbers
+(`1`, `1.1`, `1.2.1`, …), indented by depth. Siblings are ordered by ID.
+
+```
+1       T-0001  [着手中]  設計
+1.1       T-0002  [未着手]  API定義
+1.2       T-0003  [完了]    スキーマ
+2       T-0004  [未着手]  実装
+```
+
+- Numbers are computed from the full tree, so a task's number is stable
+  regardless of filtering (a hidden sibling just leaves a gap, e.g. `1.1` then `1.3`).
+- Ancestors of a matching task are always shown (dimmed) for context — so
+  filtering (e.g. the default hide-完了) never breaks the hierarchy.
+- `--tree` shows the whole tree and ignores `--limit`/`--page`.
+- Anomalies are flagged inline: `(親?)` = `親ID` points to a missing/own ID
+  (shown as a root), `(循環)` = part of a parent cycle (the loop is broken).
+- `--json --tree` adds `wbs`, `depth`, `context`, and `flags` to each row.
 
 ### Filter update (`--where` / `--set`)
 
