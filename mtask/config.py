@@ -9,6 +9,9 @@ Schema:
 
     [sheets]
     myproj = "<spreadsheet-id>"
+
+    [defaults]
+    worksheet = "Tasks"     # tab (worksheet) holding the task list; default "Tasks"
 """
 
 from __future__ import annotations
@@ -115,6 +118,23 @@ def get_user() -> str | None:
 def set_user(name: str) -> None:
     data = load()
     data.setdefault("user", {})["name"] = name
+    save(data)
+
+
+def get_worksheet() -> str | None:
+    """Configured worksheet (tab) name holding the task list, or None (default)."""
+    return load().get("defaults", {}).get("worksheet") or None
+
+
+def set_worksheet(name: str | None) -> None:
+    data = load()
+    d = data.setdefault("defaults", {})
+    if name:
+        d["worksheet"] = name
+    else:
+        d.pop("worksheet", None)
+        if not d:
+            data.pop("defaults", None)
     save(data)
 
 

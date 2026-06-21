@@ -15,6 +15,9 @@ date, grouped for the first release.
   with typer, LLM-friendly help, and `--json` on every command.
 - Per-project sheets: `sheet add` / `sheet list` / `sheet use` (slug → spreadsheet ID).
 - Default reporter (起票者): `user` / `user set`.
+- Configurable task-list worksheet (tab): `config worksheet [NAME]` and a
+  per-command `--worksheet/-w`. Default `Tasks`, falling back to the first tab
+  when unset and `Tasks` is absent (backward compatible).
 - Auth (ADR-0001): OAuth user browser flow (default) and service account;
   `auth login/logout/method`; configurable local-server `auth port` and
   redirect `auth path`.

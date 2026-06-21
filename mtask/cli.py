@@ -38,6 +38,7 @@ from .sheet import (
     NOTE_MAX_DEFAULT,
     STATUSES,
     SheetError,
+    TASKS_WORKSHEET_DEFAULT,
     TaskSheet,
     build_client,
     schedule_findings,
@@ -63,6 +64,10 @@ class Status(str, Enum):
 
 
 SHEET_OPT = typer.Option(None, "--sheet", "-s", help="Project slug to operate on (default: current).")
+WORKSHEET_OPT = typer.Option(
+    None, "--worksheet", "-w",
+    help="Worksheet (tab) holding the task list (default: configured, else 'Tasks').",
+)
 
 
 def _err(msg: str) -> None:
@@ -70,10 +75,26 @@ def _err(msg: str) -> None:
     raise typer.Exit(1)
 
 
-def _open(slug: Optional[str], *, ensure_header: bool = True) -> TaskSheet:
+def _resolve_worksheet(cli_ws: Optional[str]) -> tuple[str, bool]:
+    """Resolve (name, required): CLI flag > config > built-in 'Tasks'.
+
+    `required` is True when the name was explicitly chosen (flag/config), so a
+    missing tab is an error; False for the built-in default, which falls back to
+    the first tab for backward compatibility.
+    """
+    if cli_ws:
+        return cli_ws, True
+    cfg = config.get_worksheet()
+    if cfg:
+        return cfg, True
+    return TASKS_WORKSHEET_DEFAULT, False
+
+
+def _open(slug: Optional[str], *, ensure_header: bool = True, worksheet: Optional[str] = None) -> TaskSheet:
+    name, required = _resolve_worksheet(worksheet)
     try:
         _, sid = config.resolve_spreadsheet_id(slug)
-        return TaskSheet(sid, ensure_header=ensure_header)
+        return TaskSheet(sid, ensure_header=ensure_header, worksheet=name, worksheet_required=required)
     except (LookupError, SheetError) as e:
         _err(str(e))
         raise  # unreachable
@@ -234,6 +255,7 @@ def add(
         None, "--from", help="Bulk add: JSON array of task objects ('-' = stdin). ID is auto-assigned."
     ),
     sheet: Optional[str] = SHEET_OPT,
+    worksheet: Optional[str] = WORKSHEET_OPT,
     json_out: bool = typer.Option(False, "--json", help="Print created task(s) as JSON."),
 ):
     """Add a task (or many with --from). Prints the new task ID(s).
@@ -245,7 +267,7 @@ def add(
     if from_file is not None:
         if title is not None:
             _err("pass either a title argument or --from, not both")
-        _add_bulk(from_file, note_max, sheet, json_out)
+        _add_bulk(from_file, note_max, sheet, worksheet, json_out)
         return
     if title is None:
         _err("missing TITLE; give a title argument or use --from for bulk add")
@@ -266,7 +288,7 @@ def add(
     if reporter is not None:
         f["reporter"] = reporter
     fields = _prepare_add(f, note_max, config.get_user() or "")
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         task = ts.add(fields)
     except SheetError as e:
@@ -277,7 +299,7 @@ def add(
         typer.secho(f"added {task['ID']}: {task['タイトル']}", fg=typer.colors.GREEN)
 
 
-def _add_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: bool) -> None:
+def _add_bulk(from_file: str, note_max: int, sheet: Optional[str], worksheet: Optional[str], json_out: bool) -> None:
     items = _read_json_array(from_file)
     default_reporter = config.get_user() or ""
     normalized: list[dict[str, str]] = []
@@ -288,7 +310,7 @@ def _add_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: boo
         normalized.append(_prepare_add(f, note_max, default_reporter))
     if not normalized:
         _err("--from contained no tasks")
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         tasks = ts.add_many(normalized)
     except SheetError as e:
@@ -327,6 +349,7 @@ def update(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Apply a filter update; without it, only a dry-run preview."),
     sheet: Optional[str] = SHEET_OPT,
+    worksheet: Optional[str] = WORKSHEET_OPT,
     json_out: bool = typer.Option(False, "--json", help="Print updated task(s) as JSON."),
 ):
     """Update tasks by ID, in bulk (--from), or by filter (--where/--set).
@@ -355,12 +378,12 @@ def update(
     if from_file is not None:
         if task_id is not None or filter_mode or single_fields:
             _err("--from can't be combined with an ID, single-field flags, or --where/--set")
-        _update_bulk(from_file, note_max, sheet, json_out)
+        _update_bulk(from_file, note_max, sheet, worksheet, json_out)
         return
     if filter_mode:
         if task_id is not None or single_fields:
             _err("--where/--set can't be combined with an ID or single-field flags")
-        _update_filter(where, set_, note_max, yes, sheet, json_out)
+        _update_filter(where, set_, note_max, yes, sheet, worksheet, json_out)
         return
     if task_id is None:
         _err("missing ID; pass a task ID, or use --from / --where+--set for bulk updates")
@@ -373,7 +396,7 @@ def update(
             "--note/--plan-start/--due/--start/--finish)"
         )
 
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         task = ts.update(task_id, changes)
     except SheetError as e:
@@ -384,7 +407,7 @@ def update(
         typer.secho(f"updated {task_id}: {', '.join(changes)}", fg=typer.colors.GREEN)
 
 
-def _update_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: bool) -> None:
+def _update_bulk(from_file: str, note_max: int, sheet: Optional[str], worksheet: Optional[str], json_out: bool) -> None:
     items = _read_json_array(from_file)
     updates: list[tuple[str, dict[str, str]]] = []
     for idx, raw in enumerate(items):
@@ -398,7 +421,7 @@ def _update_bulk(from_file: str, note_max: int, sheet: Optional[str], json_out: 
         updates.append((tid, changes))
     if not updates:
         _err("--from contained no updates")
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         applied = ts.update_many(updates)
     except SheetError as e:
@@ -415,6 +438,7 @@ def _update_filter(
     note_max: int,
     yes: bool,
     sheet: Optional[str],
+    worksheet: Optional[str],
     json_out: bool,
 ) -> None:
     conds = {FIELDS[k]: v for k, v in _parse_pairs(where).items()}  # header -> expected value
@@ -422,7 +446,7 @@ def _update_filter(
     if not changes:
         _err("filter update needs at least one --set key=value")
 
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         rows = ts.records()
     except SheetError as e:
@@ -461,6 +485,7 @@ def list_(
     limit: int = typer.Option(50, "--limit", "-l", help="Max rows per page."),
     page: int = typer.Option(0, "--page", "-p", help="Page number, 0-indexed."),
     sheet: Optional[str] = SHEET_OPT,
+    worksheet: Optional[str] = WORKSHEET_OPT,
     json_out: bool = typer.Option(False, "--json", help="Print rows as a JSON array."),
 ):
     """List tasks. By default 完了/キャンセル are hidden; --show-completed includes them.
@@ -468,7 +493,7 @@ def list_(
     --tree renders a WBS hierarchy from 親ID with derived numbers (1.2.3).
     Ancestors of a matching task are always shown (dimmed) for context.
     """
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         all_rows = ts.records()
     except SheetError as e:
@@ -563,10 +588,11 @@ def _render_tree(all_rows: list[dict], matches, json_out: bool) -> None:
 def get(
     task_id: str = typer.Argument(..., help="Task ID, e.g. T-0001."),
     sheet: Optional[str] = SHEET_OPT,
+    worksheet: Optional[str] = WORKSHEET_OPT,
     json_out: bool = typer.Option(False, "--json", help="Print task as JSON."),
 ):
     """Show a single task by ID."""
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         task = ts.get(task_id)
     except SheetError as e:
@@ -587,6 +613,7 @@ app.add_typer(schedule_app, name="schedule")
 @schedule_app.command("check")
 def schedule_check(
     sheet: Optional[str] = SHEET_OPT,
+    worksheet: Optional[str] = WORKSHEET_OPT,
     json_out: bool = typer.Option(False, "--json", help="Print findings as a JSON array."),
 ):
     """Report scheduling/relationship problems (does not modify anything).
@@ -595,7 +622,7 @@ def schedule_check(
     date ranges); warnings are soft (predecessor not 完了 while 着手中/完了, a
     開始予定日 before a predecessor's 完了予定日). Exits 1 if any errors are found.
     """
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         rows = ts.records()
     except SheetError as e:
@@ -619,6 +646,35 @@ def schedule_check(
         )
     if errors:
         raise typer.Exit(1)
+
+
+# --- config command --------------------------------------------------------
+
+config_app = typer.Typer(no_args_is_help=True, help="General settings.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("worksheet")
+def config_worksheet(
+    name: Optional[str] = typer.Argument(None, help="Worksheet (tab) name for the task list. Omit to show current."),
+    clear: bool = typer.Option(False, "--clear", help="Reset to the default ('Tasks', falling back to the first tab)."),
+):
+    """Get or set the worksheet (tab) that holds the task list.
+
+    Default is 'Tasks'; if that tab doesn't exist and nothing is configured,
+    mtask falls back to the first tab. Set this when a spreadsheet has several
+    tabs (e.g. after `sheet view`/`repair` add WBS/backup tabs) so the right one
+    is always used. A per-command `--worksheet/-w` overrides this.
+    """
+    if clear:
+        config.set_worksheet(None)
+        typer.secho(f"worksheet -> (default: '{TASKS_WORKSHEET_DEFAULT}', else first tab)", fg=typer.colors.GREEN)
+        return
+    if name is None:
+        typer.echo(config.get_worksheet() or f"(default: '{TASKS_WORKSHEET_DEFAULT}', else first tab)")
+        return
+    config.set_worksheet(name)
+    typer.secho(f"worksheet -> {name}", fg=typer.colors.GREEN)
 
 
 # --- user command ----------------------------------------------------------
@@ -761,6 +817,7 @@ def sheet_list():
 @sheet_app.command("repair")
 def sheet_repair(
     sheet: Optional[str] = SHEET_OPT,
+    worksheet: Optional[str] = WORKSHEET_OPT,
     yes: bool = typer.Option(False, "--yes", "-y", help="Apply the repair; without it, only a dry-run preview."),
     backup: bool = typer.Option(
         True, "--backup/--no-backup", help="Copy the sheet to a backup tab before applying (default: on)."
@@ -774,7 +831,7 @@ def sheet_repair(
     after the column set changes. Dry-run by default; pass --yes to apply (a
     backup tab is created unless --no-backup).
     """
-    ts = _open(sheet, ensure_header=False)
+    ts = _open(sheet, ensure_header=False, worksheet=worksheet)
     try:
         plan = ts.repair_header(apply=yes, backup=backup)
     except SheetError as e:
@@ -806,6 +863,7 @@ def sheet_repair(
 @sheet_app.command("view")
 def sheet_view(
     sheet: Optional[str] = SHEET_OPT,
+    worksheet: Optional[str] = WORKSHEET_OPT,
     name: str = typer.Option("WBS", "--name", help="Name of the view tab to (re)generate."),
     json_out: bool = typer.Option(False, "--json", help="Print a JSON summary."),
 ):
@@ -816,7 +874,7 @@ def sheet_view(
     native collapsible row groups. The tab is rebuilt from scratch each run and
     protected (warning-only). The data sheet is never modified.
     """
-    ts = _open(sheet)
+    ts = _open(sheet, worksheet=worksheet)
     try:
         info = ts.build_view(view_title=name)
     except SheetError as e:

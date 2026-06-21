@@ -45,6 +45,9 @@ INPUT_ALIASES = {**{k: k for k in FIELDS}, **{v: k for k, v in FIELDS.items()}}
 STATUSES = ["未着手", "着手中", "完了", "保留", "キャンセル"]
 DONE = "完了"
 
+# Default worksheet (tab) name holding the task list (overridable via config / CLI).
+TASKS_WORKSHEET_DEFAULT = "Tasks"
+
 # Human-friendly WBS view tab (built by `sheet view`).
 VIEW_TITLE_DEFAULT = "WBS"
 VIEW_HEADERS = ["WBS", "ID", "状態", "タイトル", "概要", "作業者", "開始予定日", "完了予定日"]
@@ -431,12 +434,42 @@ def _gantt_buckets(min_d, max_d) -> list[tuple]:
 
 
 class TaskSheet:
-    def __init__(self, spreadsheet_id: str, *, ensure_header: bool = True):
-        self._ws = build_client().open_by_key(spreadsheet_id).sheet1
+    def __init__(
+        self,
+        spreadsheet_id: str,
+        *,
+        ensure_header: bool = True,
+        worksheet: str | None = None,
+        worksheet_required: bool = True,
+    ):
+        ss = build_client().open_by_key(spreadsheet_id)
+        self._ws = self._select_worksheet(ss, worksheet, worksheet_required)
         # `repair` opens with ensure_header=False so it can fix a mismatched
         # header instead of erroring out on it.
         if ensure_header:
             self._ensure_header()
+
+    @staticmethod
+    def _select_worksheet(ss, worksheet: str | None, required: bool):
+        """Pick the task-list tab by name, with a safe fallback.
+
+        If `worksheet` is None → the first tab (legacy behavior). Otherwise the
+        named tab; if missing and `required` (an explicit flag/config value) →
+        error; if missing and not required (the built-in default) → first tab.
+        """
+        if not worksheet:
+            return ss.sheet1
+        try:
+            return ss.worksheet(worksheet)
+        except gspread.WorksheetNotFound:
+            if not required:
+                return ss.sheet1
+            tabs = [w.title for w in ss.worksheets()]
+            raise SheetError(
+                f"worksheet '{worksheet}' not found. tabs: {tabs}. "
+                "Set the task-list tab with `mtask config worksheet <name>` "
+                "(or rename a tab / pass --worksheet)."
+            )
 
     def _ensure_header(self) -> None:
         first = self._ws.row_values(1)

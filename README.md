@@ -90,6 +90,7 @@ mtask sheet list                          # list projects ( * = current )
 mtask sheet use myproj                    # switch current project
 mtask sheet repair                        # reconcile columns to the schema (dry-run)
 mtask sheet view                          # (re)build a collapsible WBS view tab
+mtask config worksheet Tasks              # which tab holds the task list (default: Tasks)
 
 mtask user set alice                      # default reporter (起票者), git-style
 mtask user                                # show current user
@@ -262,7 +263,28 @@ sheet = "myproj"
 
 [sheets]
 myproj = "<spreadsheet-id>"
+
+[defaults]
+worksheet = "Tasks"            # tab that holds the task list
 ```
+
+### Which tab is the task list (`config worksheet`)
+
+A project is one spreadsheet, but a spreadsheet can have several tabs (the data,
+plus the generated `WBS` view and `backup_*` tabs). mtask reads the task list
+from the tab named **`Tasks`** by default.
+
+```bash
+mtask config worksheet              # show the current setting
+mtask config worksheet Tasks        # set the tab name
+mtask config worksheet --clear      # back to default
+mtask list -w Tasks                 # per-command override (-w / --worksheet)
+```
+
+- Resolution order: `--worksheet/-w` → `config worksheet` → built-in `Tasks`.
+- For backward compatibility, if nothing is configured **and** there's no `Tasks`
+  tab, mtask falls back to the first tab. If you explicitly set a name (flag or
+  config) and that tab is missing, it errors and lists the available tabs.
 
 ## Project docs
 

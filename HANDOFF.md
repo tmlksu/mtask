@@ -61,7 +61,14 @@ ID 親ID 起票日 状態 タイトル 概要 起票者 作業者 先行タス�
 - `update` — three modes: single (`T-0001 --field …`), bulk (`--from`), filter
   (`--where k=v … --set k=v …`). Filter is **dry-run unless `--yes`**.
 - `list` — hides 完了/キャンセル by default; `--show-completed/--status/--limit/--page`.
-- `get` — one task. `sheet add|list|use|repair`. `user [set]`. `auth login|logout|method|port|path`.
+- `get` — one task. `sheet add|list|use|repair|view`. `user [set]`. `auth login|logout|method|port|path`.
+- `config worksheet [NAME]` — which tab is the task list. Resolution
+  `--worksheet/-w` → config `[defaults].worksheet` → built-in `Tasks`; the
+  built-in default falls back to the first tab if `Tasks` is absent (back-compat),
+  but an explicit name errors if missing. Selection lives in
+  `TaskSheet._select_worksheet` (worksheet/worksheet_required), resolved by
+  `_resolve_worksheet`/`_open` in cli.py. Per-project override not yet supported
+  (would need a `[worksheets]` table) — global default + `-w` for now.
 - `sheet repair` — reconcile an existing sheet's columns to the schema
   (read→remap-by-name→rewrite once). Dry-run by default; `--yes` applies and
   copies a `backup_<name>_<ts>` tab first (`--no-backup` to skip). Opens with
