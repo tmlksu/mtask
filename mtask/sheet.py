@@ -277,6 +277,101 @@ def wbs_tree(
     return ordered, parent_map, flags, by_id
 
 
+def _nodes_in_cycles(adj: dict[str, list[str]]) -> set[str]:
+    """Return the set of nodes that lie on a directed cycle in `adj`."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in adj}
+    in_cycle: set[str] = set()
+    stack: list[str] = []
+
+    def visit(u: str) -> None:
+        color[u] = GRAY
+        stack.append(u)
+        for v in adj.get(u, []):
+            if color.get(v, BLACK) == GRAY and v in stack:
+                in_cycle.update(stack[stack.index(v):])
+            elif color.get(v, BLACK) == WHITE:
+                visit(v)
+        stack.pop()
+        color[u] = BLACK
+
+    for n in list(adj):
+        if color[n] == WHITE:
+            visit(n)
+    return in_cycle
+
+
+def schedule_findings(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Report (don't fix) scheduling/relationship problems.
+
+    Each finding is {severity: 'error'|'warning', type, id, message}. 'error'
+    = structural integrity (cycles, dangling refs, inverted dates); 'warning'
+    = soft schedule issues (predecessor not done, planned overlap).
+    """
+    _ordered, _pmap, flags, by_id = wbs_tree(records)
+    ids = set(by_id)
+    findings: list[dict[str, Any]] = []
+
+    def add(sev: str, typ: str, rid: str, msg: str) -> None:
+        findings.append({"severity": sev, "type": typ, "id": rid, "message": msg})
+
+    def preds(rid: str) -> list[str]:
+        return [x.strip() for x in str(by_id[rid].get("先行タスク") or "").split(",") if x.strip()]
+
+    # parent integrity (reuse wbs_tree flags)
+    for rid in by_id:
+        fl = flags.get(rid, set())
+        if "orphan" in fl:
+            p = str(by_id[rid].get("親ID") or "").strip()
+            if p == rid:
+                add("error", "self_parent", rid, "親IDに自分自身を指定しています")
+            else:
+                add("error", "dangling_parent", rid, f"親ID '{p}' が存在しません")
+        if "cycle" in fl:
+            add("error", "parent_cycle", rid, "親IDが循環しています")
+
+    # predecessor integrity + dependency graph
+    adj: dict[str, list[str]] = {}
+    for rid in by_id:
+        valid: list[str] = []
+        for p in preds(rid):
+            if p == rid:
+                add("error", "self_dependency", rid, "自分自身を先行タスクに指定しています")
+            elif p not in ids:
+                add("error", "dangling_predecessor", rid, f"先行タスク '{p}' が存在しません")
+            else:
+                valid.append(p)
+        adj[rid] = valid
+    for rid in _nodes_in_cycles(adj):
+        add("error", "dependency_cycle", rid, "先行タスクが循環しています")
+
+    # inverted date ranges within a task
+    for rid, r in by_id.items():
+        ps, pe = str(r.get("開始予定日", "")), str(r.get("完了予定日", ""))
+        if ps and pe and ps > pe:
+            add("error", "plan_date_inverted", rid, f"開始予定日({ps})が完了予定日({pe})より後です")
+        as_, ae = str(r.get("開始日", "")), str(r.get("完了日", ""))
+        if as_ and ae and as_ > ae:
+            add("error", "actual_date_inverted", rid, f"開始日({as_})が完了日({ae})より後です")
+
+    # predecessor-relative warnings
+    for rid in by_id:
+        r = by_id[rid]
+        st = str(r.get("状態", ""))
+        for p in adj[rid]:
+            pr = by_id[p]
+            if st in ("着手中", DONE) and str(pr.get("状態", "")) != DONE:
+                add("warning", "predecessor_not_done", rid, f"{st}ですが先行タスク {p} が未完了です")
+            ts, pe = str(r.get("開始予定日", "")), str(pr.get("完了予定日", ""))
+            if ts and pe and ts < pe:
+                add("warning", "starts_before_predecessor_due", rid,
+                    f"開始予定日({ts})が先行 {p} の完了予定日({pe})より前です")
+
+    sev_rank = {"error": 0, "warning": 1}
+    findings.sort(key=lambda f: (f["id"], sev_rank[f["severity"]], f["type"]))
+    return findings
+
+
 class TaskSheet:
     def __init__(self, spreadsheet_id: str, *, ensure_header: bool = True):
         self._ws = build_client().open_by_key(spreadsheet_id).sheet1

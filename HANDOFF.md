@@ -119,11 +119,15 @@ Compute at read time, don't store.
   collapsible outline is reachable from Python; revisit only if live auto-refresh
   on manual edits becomes a primary need.
 
+- `schedule check` — report-only diagnostics (ADR-0006). Pure `schedule_findings`
+  (sheet.py): parent cycle/dangling/self (reuses wbs_tree flags), predecessor
+  cycle/dangling/self (`_nodes_in_cycles`), inverted plan/actual dates (errors);
+  predecessor-not-done and starts-before-predecessor-due (warnings). CLI
+  `schedule check` exits 1 on errors. Dates compared as ISO strings.
+
 **Next up:**
-1. `schedule check` — report (don't auto-fix): dependency cycles, 先行タスク not
-   yet 完了 while a task is 着手中, a task's 開始予定日 before a predecessor's
-   完了予定日, missing/dangling parent or predecessor IDs. (`先行タスク` is a
-   comma-separated ID list; parse + validate against existing IDs.)
+1. 簡易ガント — surface (in-sheet view extension vs terminal ASCII) TBD; v1 draws
+   bars from 開始予定日/完了予定日 (fallback actual), WBS order, today marker.
 2. Optional conveniences: auto-set 完了日 when 状態→完了 (and 開始日 on →着手中);
    progress rollup of children to a parent.
 

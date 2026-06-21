@@ -106,6 +106,7 @@ mtask update T-0001 --status 完了 --note "merged"
 mtask add "design API" --plan-start 2026-07-01 --due 2026-07-10
 mtask add "impl endpoint" --parent T-0001 --deps T-0001 --plan-start 2026-07-11
 mtask update T-0002 --start 2026-07-11 --status 着手中
+mtask schedule check                      # report dependency/date problems
 ```
 
 ### Bulk add / update
@@ -147,6 +148,23 @@ echo '[{"id":"T-0001","status":"完了"},{"id":"T-0002","assignee":"alice"}]' \
 - Anomalies are flagged inline: `(親?)` = `親ID` points to a missing/own ID
   (shown as a root), `(循環)` = part of a parent cycle (the loop is broken).
 - `--json --tree` adds `wbs`, `depth`, `context`, and `flags` to each row.
+
+### Schedule check (`schedule check`)
+
+`mtask schedule check` reports scheduling and relationship problems — it never
+modifies anything.
+
+```bash
+mtask schedule check          # human-readable report
+mtask schedule check --json   # structured findings
+```
+
+- **Errors** (structural): `親ID`/`先行タスク` cycles, dangling or self
+  references, and inverted date ranges (開始 > 完了, planned or actual).
+- **Warnings** (soft): a task is 着手中/完了 while a predecessor isn't 完了; a
+  task's 開始予定日 falls before a predecessor's 完了予定日.
+- Exits non-zero (1) if any **errors** are found — handy in CI. Warnings alone
+  exit 0.
 
 ### In-sheet WBS view (`sheet view`)
 

@@ -28,6 +28,9 @@ date, grouped for the first release.
   read→remap→rewrite; dry-run with backup tab (ADR-0004).
 - `sheet view` — human-friendly, collapsible in-sheet WBS view tab via the
   Sheets API, no Apps Script (ADR-0005).
+- `schedule check` — report-only diagnostics for dependency/parent cycles,
+  dangling/self references, inverted date ranges (errors) and soft schedule
+  issues (warnings); exits non-zero on errors (ADR-0006).
 - Docs: README, HANDOFF, ADRs, this changelog.
 
 ### Changed

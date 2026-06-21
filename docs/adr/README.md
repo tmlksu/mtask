@@ -20,3 +20,4 @@ to work on it now, ADR = why it's built this way, CHANGELOG = what changed when.
 - [0003](0003-mutations-dry-run-and-batch-api.md) — Bulk/destructive ops: dry-run by default + batched API
 - [0004](0004-sheet-repair-rewrite-strategy.md) — `sheet repair` via read→remap→rewrite
 - [0005](0005-in-sheet-wbs-view-no-gas.md) — In-sheet WBS view via the CLI, not GAS
+- [0006](0006-schedule-check-report-only.md) — Schedule diagnostics: report-only, severity + CI exit code

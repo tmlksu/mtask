@@ -40,6 +40,7 @@ from .sheet import (
     SheetError,
     TaskSheet,
     build_client,
+    schedule_findings,
     wbs_tree,
 )
 
@@ -575,6 +576,49 @@ def get(
     else:
         for k, v in task.items():
             typer.echo(f"{k}: {v}")
+
+
+# --- schedule command ------------------------------------------------------
+
+schedule_app = typer.Typer(no_args_is_help=True, help="Schedule & dependency diagnostics (report-only).")
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("check")
+def schedule_check(
+    sheet: Optional[str] = SHEET_OPT,
+    json_out: bool = typer.Option(False, "--json", help="Print findings as a JSON array."),
+):
+    """Report scheduling/relationship problems (does not modify anything).
+
+    Errors are structural (親ID/先行タスク cycles, dangling/self refs, inverted
+    date ranges); warnings are soft (predecessor not 完了 while 着手中/完了, a
+    開始予定日 before a predecessor's 完了予定日). Exits 1 if any errors are found.
+    """
+    ts = _open(sheet)
+    try:
+        rows = ts.records()
+    except SheetError as e:
+        _err(str(e))
+
+    findings = schedule_findings(rows)
+    errors = [f for f in findings if f["severity"] == "error"]
+    warnings = [f for f in findings if f["severity"] == "warning"]
+
+    if json_out:
+        typer.echo(json.dumps(findings, ensure_ascii=False))
+    elif not findings:
+        typer.secho("OK: no schedule issues found.", fg=typer.colors.GREEN)
+    else:
+        for f in findings:
+            color = typer.colors.RED if f["severity"] == "error" else typer.colors.YELLOW
+            typer.secho(f"[{f['severity']:<7}] {f['id']}  {f['type']}: {f['message']}", fg=color)
+        typer.secho(
+            f"-- {len(errors)} error(s), {len(warnings)} warning(s) --",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+    if errors:
+        raise typer.Exit(1)
 
 
 # --- user command ----------------------------------------------------------
