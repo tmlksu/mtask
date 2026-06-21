@@ -3,6 +3,18 @@
 Working notes for continuing development. User-facing usage lives in `README.md`;
 this file captures architecture, conventions, and what's next.
 
+## Docs map
+
+| Doc | Role | Update when |
+|-----|------|-------------|
+| `README.md` | How to use it | behavior/flags change |
+| `HANDOFF.md` | How to work on it now (this file) | architecture/conventions/roadmap shift |
+| `docs/adr/` | **Why** it's built this way (append-only) | a decision with real trade-offs is made — add `NNNN-*.md` |
+| `CHANGELOG.md` | **What** changed when (Keep a Changelog) | any notable user-facing change — add under `[Unreleased]` |
+
+Don't rewrite an accepted ADR to reverse it — add a new ADR that supersedes it.
+Routine changes go in commits + CHANGELOG, not ADRs.
+
 ## What mtask is
 
 A spreadsheet-backed task manager CLI (one project = one Google Spreadsheet),
@@ -19,6 +31,8 @@ mtask/
   sheet.py    # gspread client + OAuth flow + TaskSheet (all sheet I/O)
 README.md     # user docs
 HANDOFF.md    # this file
+CHANGELOG.md  # notable changes (Keep a Changelog)
+docs/adr/     # architecture decision records (why)
 pyproject.toml / uv.lock  # packaging (hatchling), entry point mtask = mtask.cli:app
 ```
 

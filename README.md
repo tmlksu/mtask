@@ -241,3 +241,9 @@ sheet = "myproj"
 [sheets]
 myproj = "<spreadsheet-id>"
 ```
+
+## Project docs
+
+- [CHANGELOG.md](CHANGELOG.md) — notable changes per version.
+- [docs/adr/](docs/adr/) — architecture decision records (why it's built this way).
+- [HANDOFF.md](HANDOFF.md) — orientation for working on the code.
