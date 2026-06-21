@@ -125,11 +125,18 @@ Compute at read time, don't store.
   predecessor-not-done and starts-before-predecessor-due (warnings). CLI
   `schedule check` exits 1 on errors. Dates compared as ISO strings.
 
+- 簡易ガント (ADR-0007) — built into `sheet view`: a date grid right of the WBS
+  columns, cells background-colored into bars over each task's planned span
+  (fallback actual), 今日 marker, adaptive day/week/month buckets. Conditional
+  row-tint confined to the left columns so it doesn't cover the bars. Pure helpers
+  `_task_span`/`_gantt_buckets` (sheet.py) are unit-tested; the batch_update
+  formatting isn't covered without a live sheet.
+
 **Next up:**
-1. 簡易ガント — surface (in-sheet view extension vs terminal ASCII) TBD; v1 draws
-   bars from 開始予定日/完了予定日 (fallback actual), WBS order, today marker.
-2. Optional conveniences: auto-set 完了日 when 状態→完了 (and 開始日 on →着手中);
+1. Optional conveniences: auto-set 完了日 when 状態→完了 (and 開始日 on →着手中);
    progress rollup of children to a parent.
+2. Maybe a terminal ASCII gantt (`list --gantt`) as a CLI convenience (deferred
+   in ADR-0007).
 
 Design rules to honor: store raw inputs only; relationships are ID references;
 emit reports rather than mutating dates; keep it spreadsheet-reasonable (no

@@ -56,6 +56,16 @@ STATUS_COLORS = {
     "保留": (1.00, 0.95, 0.80),
     "キャンセル": (0.96, 0.80, 0.80),
 }
+# Stronger colors for the gantt bars (so they stand out from the row tint).
+BAR_COLORS = {
+    "未着手": (0.62, 0.62, 0.62),
+    "着手中": (0.26, 0.52, 0.96),
+    "完了": (0.36, 0.74, 0.36),
+    "保留": (0.98, 0.74, 0.16),
+    "キャンセル": (0.86, 0.30, 0.30),
+}
+BAR_COLOR_DEFAULT = (0.50, 0.50, 0.50)
+TODAY_COLOR = (0.99, 0.85, 0.40)
 # Terminal states hidden from `list` unless --show-completed is passed.
 HIDDEN_BY_DEFAULT = {"完了", "キャンセル"}
 # Google Sheets allows up to 50,000 characters per cell.
@@ -372,6 +382,54 @@ def schedule_findings(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return findings
 
 
+def _parse_date(s) -> "dt.date | None":
+    s = str(s or "").strip()
+    if len(s) == 10:
+        try:
+            return dt.date.fromisoformat(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _task_span(r: dict) -> tuple:
+    """Planned span (fallback to actual): (start, end) dates or (None, None)."""
+    start = _parse_date(r.get("開始予定日")) or _parse_date(r.get("開始日"))
+    end = _parse_date(r.get("完了予定日")) or _parse_date(r.get("完了日"))
+    if start and not end:
+        end = start
+    if end and not start:
+        start = end
+    if start and end and start > end:
+        start, end = end, start
+    return start, end
+
+
+def _gantt_buckets(min_d, max_d) -> list[tuple]:
+    """Bucket [min_d, max_d] into columns: daily (<=31d), weekly (<=~30w), else monthly.
+
+    Returns [(label, bucket_start, bucket_end)].
+    """
+    total = (max_d - min_d).days + 1
+    step = 1 if total <= 31 else (7 if total <= 7 * 30 else None)
+    buckets: list[tuple] = []
+    if step is not None:
+        cur = min_d
+        while cur <= max_d:
+            b_end = min(cur + dt.timedelta(days=step - 1), max_d)
+            buckets.append((f"{cur.month}/{cur.day}", cur, b_end))
+            cur = b_end + dt.timedelta(days=1)
+    else:
+        y, m = min_d.year, min_d.month
+        while (y, m) <= (max_d.year, max_d.month):
+            b_start = dt.date(y, m, 1)
+            nxt = dt.date(y + 1, 1, 1) if m == 12 else dt.date(y, m + 1, 1)
+            b_end = nxt - dt.timedelta(days=1)
+            buckets.append((f"{y}/{m}", max(b_start, min_d), min(b_end, max_d)))
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return buckets
+
+
 class TaskSheet:
     def __init__(self, spreadsheet_id: str, *, ensure_header: bool = True):
         self._ws = build_client().open_by_key(spreadsheet_id).sheet1
@@ -578,13 +636,16 @@ class TaskSheet:
         return plan
 
     def build_view(self, *, view_title: str = VIEW_TITLE_DEFAULT) -> dict[str, Any]:
-        """(Re)build a human-friendly, collapsible WBS view in a separate tab.
+        """(Re)build a human-friendly, collapsible WBS view + gantt in a separate tab.
 
         Renders the 親ID tree with WBS numbers + indentation, color-codes rows by
         状態, bolds parent rows, freezes the header, and creates native row groups
-        (the +/- outline) so the hierarchy collapses. The tab is recreated from
-        scratch each run (so stale formatting/groups never accumulate) and is
-        protected (warning-only). The data sheet is never modified.
+        (the +/- outline) so the hierarchy collapses. To the right it draws a
+        simple gantt: a date grid whose cells are background-colored to form a bar
+        across each task's planned span (fallback to actual), with a 今日 marker.
+        The tab is recreated from scratch each run (so stale formatting/groups
+        never accumulate) and is protected (warning-only). The data sheet is
+        never modified.
         """
         if view_title == self._ws.title:
             raise SheetError(
@@ -593,9 +654,26 @@ class TaskSheet:
             )
 
         ordered, _parent_map, flags, by_id = wbs_tree(self.records())
+        n = len(ordered)
+        left = len(VIEW_HEADERS)
+
+        # gantt buckets from the tasks' planned/actual spans -------------------
+        spans = {rid: _task_span(by_id[rid]) for rid in by_id}
+        dated = [spans[rid] for rid, _, _ in ordered if spans[rid][0]]
+        buckets: list[tuple] = []
+        today_idx = None
+        if dated:
+            min_d = min(s[0] for s in dated)
+            max_d = max(s[1] for s in dated)
+            buckets = _gantt_buckets(min_d, max_d)
+            today = dt.date.today()
+            today_idx = next((k for k, (_l, bs, be) in enumerate(buckets) if bs <= today <= be), None)
+
+        grid_header = [("▼" if k == today_idx else "") + lbl for k, (lbl, _bs, _be) in enumerate(buckets)]
+        ncols = left + len(buckets)
 
         # value matrix --------------------------------------------------------
-        rows: list[list[str]] = [VIEW_HEADERS]
+        rows: list[list[str]] = [VIEW_HEADERS + grid_header]
         for rid, depth, wbs in ordered:
             r = by_id[rid]
             mark = ""
@@ -615,6 +693,7 @@ class TaskSheet:
                     str(r.get("開始予定日", "")),
                     str(r.get("完了予定日", "")),
                 ]
+                + [""] * len(buckets)
             )
 
         ss = self._ws.spreadsheet
@@ -623,24 +702,30 @@ class TaskSheet:
             ss.del_worksheet(old)
         except gspread.WorksheetNotFound:
             pass
-        view = ss.add_worksheet(title=view_title, rows=max(len(rows), 1), cols=len(VIEW_HEADERS))
+        view = ss.add_worksheet(title=view_title, rows=max(len(rows), 1), cols=max(ncols, 1))
         view.update(rows, "A1", value_input_option="USER_ENTERED")
 
         sid = view.id
-        ncols = len(VIEW_HEADERS)
-        n = len(ordered)
-        # subtree end (exclusive ordered index) per node, from depths
         depths = [d for _, d, _ in ordered]
 
+        def _bg(row0, row1, col0, col1, rgb):
+            return {
+                "repeatCell": {
+                    "range": {"sheetId": sid, "startRowIndex": row0, "endRowIndex": row1, "startColumnIndex": col0, "endColumnIndex": col1},
+                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}}},
+                    "fields": "userEnteredFormat.backgroundColor",
+                }
+            }
+
         requests: list[dict] = [
-            # freeze header
+            # freeze header row + the left (label) columns
             {
                 "updateSheetProperties": {
-                    "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
-                    "fields": "gridProperties.frozenRowCount",
+                    "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 4}},
+                    "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
                 }
             },
-            # bold header
+            # bold header (full width)
             {
                 "repeatCell": {
                     "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": ncols},
@@ -650,7 +735,8 @@ class TaskSheet:
             },
         ]
 
-        # color rows by 状態 (column C = 状態) via conditional formatting
+        # color rows by 状態 (column C = 状態) via conditional formatting — LEFT block only,
+        # so it doesn't paint over the gantt bars (which use cell backgrounds).
         for status, (cr, cg, cb) in STATUS_COLORS.items():
             requests.append(
                 {
@@ -658,7 +744,7 @@ class TaskSheet:
                         "index": 0,
                         "rule": {
                             "ranges": [
-                                {"sheetId": sid, "startRowIndex": 1, "endRowIndex": max(len(rows), 2), "startColumnIndex": 0, "endColumnIndex": ncols}
+                                {"sheetId": sid, "startRowIndex": 1, "endRowIndex": max(len(rows), 2), "startColumnIndex": 0, "endColumnIndex": left}
                             ],
                             "booleanRule": {
                                 "condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": f'=$C2="{status}"'}]},
@@ -669,7 +755,7 @@ class TaskSheet:
                 }
             )
 
-        # bold parent rows + collapsible groups over each node's descendants
+        # bold parent rows (left block) + collapsible groups over descendants
         for i in range(n):
             j = i + 1
             while j < n and depths[j] > depths[i]:
@@ -680,7 +766,7 @@ class TaskSheet:
             requests.append(
                 {
                     "repeatCell": {
-                        "range": {"sheetId": sid, "startRowIndex": parent_row, "endRowIndex": parent_row + 1, "startColumnIndex": 0, "endColumnIndex": ncols},
+                        "range": {"sheetId": sid, "startRowIndex": parent_row, "endRowIndex": parent_row + 1, "startColumnIndex": 0, "endColumnIndex": left},
                         "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
                         "fields": "userEnteredFormat.textFormat.bold",
                     }
@@ -690,6 +776,29 @@ class TaskSheet:
                 {
                     "addDimensionGroup": {
                         "range": {"sheetId": sid, "dimension": "ROWS", "startIndex": i + 2, "endIndex": j + 1}
+                    }
+                }
+            )
+
+        # gantt: bar per task + today column highlight + narrow grid columns
+        if buckets:
+            for i, (rid, _depth, _wbs) in enumerate(ordered):
+                start, end = spans[rid]
+                if not start:
+                    continue
+                cols = [k for k, (_l, bs, be) in enumerate(buckets) if not (end < bs or start > be)]
+                if not cols:
+                    continue
+                rgb = BAR_COLORS.get(str(by_id[rid].get("状態", "")), BAR_COLOR_DEFAULT)
+                requests.append(_bg(i + 1, i + 2, left + min(cols), left + max(cols) + 1, rgb))
+            if today_idx is not None:
+                requests.append(_bg(0, 1, left + today_idx, left + today_idx + 1, TODAY_COLOR))
+            requests.append(
+                {
+                    "updateDimensionProperties": {
+                        "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": left, "endIndex": ncols},
+                        "properties": {"pixelSize": 28},
+                        "fields": "pixelSize",
                     }
                 }
             )
@@ -708,4 +817,4 @@ class TaskSheet:
         )
 
         ss.batch_update({"requests": requests})
-        return {"view": view_title, "rows": n}
+        return {"view": view_title, "rows": n, "gantt_cols": len(buckets)}

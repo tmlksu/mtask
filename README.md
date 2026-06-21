@@ -179,6 +179,10 @@ mtask sheet view --name 計画   # use a different tab name
 - WBS numbers + indentation, **native row groups** (the +/- outline) so the
   hierarchy collapses, rows **color-coded by 状態**, parent rows bold, header
   frozen.
+- **Built-in gantt:** to the right of the WBS columns, a date grid whose cells
+  are colored to form a **bar across each task's span** (planned
+  `開始予定日`/`完了予定日`, falling back to actual), with a **今日 marker**.
+  The grid buckets adapt to the range (daily / weekly / monthly).
 - The tab is rebuilt from scratch each run (no stale formatting/groups) and is
   protected (warning-only). **The data sheet is never modified.**
 - It's a snapshot — re-run after changes. (No Apps Script needed; it's all done
